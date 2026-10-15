@@ -19,6 +19,7 @@ import {
   buildQueryPlan,
   searchBM25,
   searchBM25Planned,
+  tokenize,
 } from './search.js';
 import { WikiIndexer } from './wiki-indexer.js';
 import type { WikiEntry, WikiNodeType } from './wiki-types.js';
@@ -170,8 +171,110 @@ afterEach(async () => {
   ));
 });
 
+describe('lexical recall regressions', () => {
+  it.each([
+    ['用户AuthToken流程', ['auth', 'token', 'authtoken'], ['auth token', 'AuthToken']],
+    ['HTTP2Server', ['http2', 'server', 'http2server'], ['server', 'HTTP2Server']],
+  ])('recalls identifier components and joined form: %s', (title, expectedTokens, queries) => {
+    expect(tokenize(title)).toEqual(expect.arrayContaining(expectedTokens));
+    const index = buildInvertedIndex([entry('target', title, '')]);
+    for (const search of [searchBM25, searchBM25Planned]) {
+      for (const query of queries) {
+        expect(search(index, query, 1).map(result => result.docId), query).toEqual(['target']);
+      }
+    }
+  });
+
+  it('supports exact title/tag singleton lookup without admitting Latin body or CJK substring unigrams', () => {
+    const index = buildInvertedIndex([
+      entry('r-title', 'R', ''),
+      entry('r-tag', 'Statistics', '', { tags: ['R'] }),
+      entry('body-only', 'Notes', 'R '.repeat(100), { summary: 'R', category: 'R' }),
+      entry('not-exact', 'R tutorial', '', { tags: ['R language'] }),
+      entry('cjk-title', '锁', ''),
+      entry('cjk-tag', 'Concurrency', '', { tags: ['锁'] }),
+      entry('cjk-substring', '读写锁', '读写锁'.repeat(100)),
+    ]);
+    for (const search of [searchBM25, searchBM25Planned]) {
+      for (const query of ['R', 'r', ' R ']) {
+        expect(search(index, query, 10).map(result => result.docId).sort()).toEqual(['r-tag', 'r-title']);
+        expect(search(index, query, 1, undefined, new Set(['r-tag'])).map(result => result.docId))
+          .toEqual(['r-tag']);
+      }
+      expect(search(index, '锁', 10).map(result => result.docId).sort()).toEqual(['cjk-tag', 'cjk-title']);
+    }
+    expect(tokenize('R')).toEqual([]);
+    expect(tokenize('读写锁')).toEqual(['读写', '写锁', '读写锁']);
+    expect(index.fieldPostings.has('读')).toBe(false);
+    // One bounded synthetic term for the exact Latin singleton, never body TF.
+    const exact = [...index.fieldPostings].filter(([term]) => term.startsWith('\u0000singleton:'));
+    expect(exact).toHaveLength(1);
+    expect(exact[0][1]).toHaveLength(2);
+    expect(exact[0][1].every(posting => posting.fieldTfs.body === 0)).toBe(true);
+  });
+
+  it('gives explicit synonym originals full weight regardless of order', () => {
+    const index = buildInvertedIndex([
+      entry('auth', 'Auth', ''),
+      entry('authentication', 'Authentication', ''),
+    ]);
+    for (const search of [searchBM25, searchBM25Planned]) {
+      const forward = search(index, 'auth authentication', 2);
+      const reverse = search(index, 'authentication auth', 2);
+      expect(forward.map(result => result.docId)).toEqual(reverse.map(result => result.docId));
+      // Planned RRF intentionally breaks equal BM25 scores by document ID.
+      if (search === searchBM25) expect(forward[0].score).toBeCloseTo(forward[1].score, 12);
+      for (let i = 0; i < forward.length; i++) {
+        expect(reverse[i].score).toBeCloseTo(forward[i].score, 12);
+      }
+    }
+    for (const query of ['auth authentication', 'authentication auth']) {
+      const weighted = buildQueryPlan(query).groups[0].weightedTerms;
+      expect(weighted.find(term => term.term === 'auth')?.weight).toBe(1);
+      expect(weighted.find(term => term.term === 'authentication')?.weight).toBe(1);
+    }
+  });
+
+  it('ignores tokenless and duplicate raw parts in coverage and ranking', () => {
+    const index = buildInvertedIndex([
+      entry('complete', 'Contract', 'cache invalidation'),
+      entry('partial', 'Cache', 'cache'),
+      entry('other', 'Release workflow'),
+    ]);
+    const expected = searchBM25Planned(index, 'cache invalidation', 3);
+    for (const query of ['cache invalidation ?', 'cache invalidation cache', 'cache invalidation CACHE']) {
+      const plan = buildQueryPlan(query, index);
+      expect(plan.coreCoverageTerms.map(term => term.key), query).toEqual(['cache', 'invalidation']);
+      expect(searchBM25Planned(index, query, 3), query).toEqual(expected);
+    }
+    expect(buildQueryPlan('? a').coreCoverageTerms).toEqual([]);
+  });
+
+  it('credits all overlapping coverage keys without scoring a posting twice', () => {
+    const index = buildInvertedIndex([
+      entry('overlap', '缓存器', ''),
+      entry('competitor', '缓存', ''),
+      entry('other', 'Release', ''),
+    ]);
+    // Both documents match 缓存. The first also matches 存器 via the longer key;
+    // matching 缓存 must satisfy BOTH searchable concepts, not only the first.
+    const forward = searchBM25Planned(index, '缓存 缓存器', 3);
+    const reverse = searchBM25Planned(index, '缓存器 缓存', 3);
+    expect(forward.map(result => result.docId)).toEqual(reverse.map(result => result.docId));
+    const unpenalized = searchBM25(index, '缓存 缓存器', 3);
+    for (let i = 0; i < forward.length; i++) {
+      const result = forward[i];
+      expect(result.score).toBeCloseTo(reverse.find(other => other.docId === result.docId)!.score, 12);
+      // Shared 缓存 gives BOTH docs full coverage. The single-group blend
+      // therefore equals the unpenalized BM25 blend, with no duplicate TF.
+      const expected = 0.3 * (11 / (11 + i)) + 0.7 * (unpenalized[i].score / unpenalized[0].score);
+      expect(result.score).toBeCloseTo(expected, 12);
+    }
+  });
+});
+
 describe('planned Wiki ranking', () => {
-  it('plans short queries and applies coverage-aware scoring without a legacy bypass', () => {
+  it('plans short queries and applies coverage-aware scoring without a legacy bypass', async () => {
     const entries = [
       entry('complete', 'Contract', 'cache invalidation'),
       entry('partial', 'Cache', 'cache'),
@@ -181,8 +284,10 @@ describe('planned Wiki ranking', () => {
     const plan = buildQueryPlan('cache invalidation', index);
     const legacy = searchBM25(index, 'cache invalidation', 3);
     const planned = searchBM25Planned(index, 'cache invalidation', 3);
-    const legacyNdcg = 1 / Math.log2(3);
-    const plannedNdcg = 1;
+    const evaluator = await loadRankingEvaluator();
+    const relevance = { complete: 1 };
+    const legacyNdcg = evaluator.computeRankingMetrics(legacy.map(result => result.docId), relevance).ndcgAt10;
+    const plannedNdcg = evaluator.computeRankingMetrics(planned.map(result => result.docId), relevance).ndcgAt10;
 
     expect(plan.tokens.map(token => token.normalized)).toEqual(['cache', 'invalidation']);
     expect(plan.groups).toHaveLength(1);

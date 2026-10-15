@@ -79,6 +79,7 @@ interface WeightedTerm {
   term: string;
   weight: number;
   coverageKey?: string;
+  coverageKeys?: readonly string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -134,14 +135,13 @@ export interface QueryPlan {
 }
 
 function expandQueryTerms(tokens: string[], index?: InvertedIndex): WeightedTerm[] {
-  const seen = new Set<string>();
-  const weighted: WeightedTerm[] = [];
+  // Reserve originals before adding expansions: an earlier synonym must not
+  // demote an explicitly requested term or prevent its own expansion.
+  const originals = [...new Set(tokens)];
+  const seen = new Set(originals);
+  const weighted: WeightedTerm[] = originals.map(term => ({ term, weight: 1.0 }));
 
-  for (const t of tokens) {
-    if (seen.has(t)) continue;
-    seen.add(t);
-    weighted.push({ term: t, weight: 1.0 });
-
+  for (const t of originals) {
     const syns = SYNONYMS.get(t);
     if (syns) {
       for (const s of syns) {
@@ -267,6 +267,8 @@ export interface SerializedInvertedIndex {
   schemaVersion: 'bm25f/1';
   /** Explicit payload version for forward-compatible validation. */
   version: 1;
+  /** Compiled postings are reusable only with the current tokenization policy. */
+  tokenizerPolicy?: string;
   totalDocs: number;
   avgFieldLengths: FieldLengths;
   fieldPostings: Array<readonly [string, Array<{
@@ -295,6 +297,7 @@ export interface InvertedIndexValidationOptions {
 }
 
 const SERIALIZED_BM25F_VERSION = 1;
+const TOKENIZER_POLICY = 'lexical/3';
 const MAX_COMPILED_TERMS = 1_000_000;
 const MAX_COMPILED_POSTINGS = 4_000_000;
 const MAX_COMPILED_DOCS = 1_000_000;
@@ -370,6 +373,7 @@ export function serializeInvertedIndex(
   return {
     schemaVersion: 'bm25f/1',
     version: SERIALIZED_BM25F_VERSION,
+    tokenizerPolicy: TOKENIZER_POLICY,
     totalDocs: index.totalDocs,
     avgFieldLengths: cloneLengths(index.avgFieldLengths),
     fieldPostings,
@@ -405,7 +409,8 @@ export function deserializeInvertedIndex(
   const docIdFingerprint = value.docIdFingerprint;
   const configFingerprint = value.configFingerprint;
   if ((schemaVersion !== 'bm25f/1' && format !== 'bm25f')
-    || (version !== SERIALIZED_BM25F_VERSION && schemaVersion !== 'bm25f/1')
+    || version !== SERIALIZED_BM25F_VERSION
+    || value.tokenizerPolicy !== TOKENIZER_POLICY
     || typeof totalDocs !== 'number' || !Number.isSafeInteger(totalDocs)
     || totalDocs < 0 || totalDocs > MAX_COMPILED_DOCS
     || !validAverageLengths(avgFieldLengths)
@@ -527,7 +532,7 @@ export const deserializeBM25FIndex = deserializeInvertedIndex;
 
 const CJK_RUN = /[一-鿿㐀-䶿]+/g;
 const HAS_CJK = /[一-鿿㐀-䶿]/;
-const CAMEL_BOUNDARY = /[a-z][A-Z]|[A-Z]+[A-Z][a-z]/;
+const CAMEL_BOUNDARY = /[a-z0-9][A-Z]|[A-Z]+[A-Z][a-z]/;
 
 function cjkNgrams(run: string): string[] {
   const out: string[] = [];
@@ -557,10 +562,10 @@ export function tokenize(text: string): string[] {
       for (const run of cjkRuns) {
         for (const g of cjkNgrams(run)) out.push(g);
       }
-      const latinRemainder = lower.replace(CJK_RUN, ' ').split(/\s+/).filter(Boolean);
-      for (const lr of latinRemainder) {
-        if (lr.length >= 2 && !STOP_WORDS.has(lr)) out.push(lr);
-      }
+      // Preserve case until each non-CJK span has passed the same identifier
+      // splitter as standalone Latin text (用户AuthToken → auth, token, authtoken).
+      const latinRemainder = raw.replace(CJK_RUN, ' ').split(/\s+/).filter(Boolean);
+      for (const lr of latinRemainder) out.push(...tokenize(lr));
     } else {
       // Most prose tokens cannot contain either camel-case boundary. Avoid
       // allocating two replacement strings and an array for that common case.
@@ -570,7 +575,7 @@ export function tokenize(text: string): string[] {
       }
       // CamelCase split: "DetailedTopologySVG" → ["Detailed","Topology","SVG"]
       const camelParts = raw
-        .replace(/([a-z])([A-Z])/g, '$1\x00$2')
+        .replace(/([a-z0-9])([A-Z])/g, '$1\x00$2')
         .replace(/([A-Z]+)([A-Z][a-z])/g, '$1\x00$2')
         .split('\x00');
       for (const cp of camelParts) {
@@ -587,6 +592,17 @@ export function tokenize(text: string): string[] {
 // ---------------------------------------------------------------------------
 // Field text extraction
 // ---------------------------------------------------------------------------
+
+/** Whole title/tag identifiers only; never add Latin singleton body postings. */
+function exactLatinSingletonTerm(text: string): string | undefined {
+  const normalized = text.trim().toLowerCase();
+  return /^[a-z]$/.test(normalized) ? `\0singleton:${normalized}` : undefined;
+}
+
+function tokenizeSearchQuery(query: string): string[] {
+  const singleton = exactLatinSingletonTerm(query);
+  return singleton ? [singleton] : tokenize(query);
+}
 
 function isKgVirtual(entry: WikiEntry): boolean {
   const vk = entry.ext?.virtualKind;
@@ -683,6 +699,21 @@ export function buildInvertedIndex(entries: WikiEntry[]): InvertedIndex {
         }
         frequencies[f] += count;
       }
+      if (f === 'title' || f === 'tags') {
+        const texts = f === 'title' ? [entry.title] : entry.tags;
+        const exactTerms = new Set(texts.map(exactLatinSingletonTerm));
+        for (const term of exactTerms) {
+          if (!term) continue;
+          let frequencies = termFields.get(term);
+          if (!frequencies) {
+            frequencies = { title: 0, summary: 0, tags: 0, body: 0 };
+            termFields.set(term, frequencies);
+          }
+          frequencies[f]++;
+          lengths[f]++;
+          totalFieldLengths[f]++;
+        }
+      }
     }
 
     fieldLengths.set(entry.id, lengths);
@@ -731,7 +762,7 @@ export function searchBM25(
   allowedDocIds?: ReadonlySet<string>,
   candidateBudget?: SearchCandidateBudget,
 ): SearchResult[] {
-  const terms = tokenize(query);
+  const terms = tokenizeSearchQuery(query);
   if (terms.length === 0 || index.totalDocs === 0) return [];
 
   const weighted = expandQueryTerms(terms, index);
@@ -827,7 +858,7 @@ function searchBM25FWithCoverage(
   const scores = new Map<string, number>();
   const docCoverageHits = new Map<string, Set<string>>();
 
-  for (const { term, weight, coverageKey } of weightedTerms) {
+  for (const { term, weight, coverageKey, coverageKeys } of weightedTerms) {
     const postings = fp.get(term);
     if (!postings || postings.length === 0) continue;
 
@@ -854,10 +885,11 @@ function searchBM25FWithCoverage(
       const termScore = weight * idf * ((tfTilde * (BM25_K1 + 1)) / (tfTilde + BM25_K1));
       scores.set(docId, (scores.get(docId) ?? 0) + termScore);
 
-      if (coverageKey) {
+      if (coverageKey || coverageKeys?.length) {
         let hits = docCoverageHits.get(docId);
         if (!hits) { hits = new Set(); docCoverageHits.set(docId, hits); }
-        hits.add(coverageKey);
+        if (coverageKey) hits.add(coverageKey);
+        for (const key of coverageKeys ?? []) hits.add(key);
       }
     }
   }
@@ -896,11 +928,26 @@ function isCodeIdentifier(raw: string): boolean {
 }
 
 export function buildQueryPlan(query: string, index?: InvertedIndex): QueryPlan {
+  const singleton = exactLatinSingletonTerm(query);
+  if (singleton) {
+    const normalized = query.trim().toLowerCase();
+    return {
+      rawQuery: query,
+      tokens: [{ raw: query.trim(), normalized, role: 'core', weight: 1 }],
+      groups: [{ role: 'core', weightedTerms: [{ term: singleton, weight: 1 }], rrfWeight: 1 }],
+      coreCoverageTerms: [{ key: normalized, terms: [singleton], weight: 1 }],
+    };
+  }
   const rawParts = query.split(/\s+/).filter(Boolean);
   const tokens: QueryTokenClassification[] = [];
+  const seen = new Set<string>();
 
   for (const raw of rawParts) {
     const normalized = raw.toLowerCase();
+    // Coverage is over unique searchable requirements, not raw punctuation or
+    // repeated words. Filtering here also keeps duplicate parts out of groups.
+    if (seen.has(normalized) || tokenize(raw).length === 0) continue;
+    seen.add(normalized);
     let role: QueryTermRole;
     let weight: number;
 
@@ -985,7 +1032,7 @@ export function searchBM25Planned(
   allowedDocIds?: ReadonlySet<string>,
   candidateBudget?: SearchCandidateBudget,
 ): SearchResult[] {
-  const terms = tokenize(query);
+  const terms = tokenizeSearchQuery(query);
   if (terms.length === 0 || index.totalDocs === 0) return [];
 
   const plan = buildQueryPlan(query, index);
@@ -1003,13 +1050,23 @@ export function searchBM25Planned(
     baseFactor: 0.65,
   };
 
-  const taggedGroups = plan.groups.map(g => {
-    const tagged = g.weightedTerms.map(wt => {
-      const covTerm = plan.coreCoverageTerms.find(ct => ct.terms.includes(wt.term));
-      return { ...wt, coverageKey: covTerm?.key };
-    });
-    return { ...g, weightedTerms: tagged };
-  });
+  // A shared ngram/identifier component can satisfy several requirements.
+  // Keep one scored posting while crediting every corresponding coverage key.
+  const coverageKeysByTerm = new Map<string, string[]>();
+  for (const ct of plan.coreCoverageTerms) {
+    for (const term of new Set(ct.terms)) {
+      const keys = coverageKeysByTerm.get(term) ?? [];
+      keys.push(ct.key);
+      coverageKeysByTerm.set(term, keys);
+    }
+  }
+  const taggedGroups = plan.groups.map(g => ({
+    ...g,
+    weightedTerms: g.weightedTerms.map(wt => ({
+      ...wt,
+      coverageKeys: coverageKeysByTerm.get(wt.term),
+    })),
+  }));
 
   const groupResults = taggedGroups.map(g =>
     searchBM25FWithCoverage(

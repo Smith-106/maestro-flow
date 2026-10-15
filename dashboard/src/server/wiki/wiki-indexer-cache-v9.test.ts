@@ -127,6 +127,58 @@ describe('WikiIndexer search-cache compatibility and compiled postings', () => {
     await reader.close();
   });
 
+  it('keeps identifier recall identical for cold, warm, and old compiled-cache rebuilds', async () => {
+    await writeFile(join(root, 'specs', 'mixed.md'), '---\ntitle: 用户AuthToken流程 HTTP2Server\n---\n');
+    const { indexer } = await publish(true);
+    const cold = await indexer.getSearchIndex();
+    const queries = ['auth token', 'server', 'AuthToken', 'HTTP2Server'];
+    const expected = queries.map(query => searchBM25Planned(cold, query, 10));
+    for (const results of expected) expect(results.map(result => result.docId)).toContain('spec:project:mixed');
+    await indexer.close();
+
+    const warm = new WikiIndexer({ workflowRoot: root, role: 'reader', includeCliSessions: false });
+    const cached = await warm.getSearchIndexWithMeta();
+    expect(cached.cacheState).toBe('cache-hit');
+    expect(queries.map(query => searchBM25Planned(cached.index, query, 10))).toEqual(expected);
+    await warm.close();
+
+    const cache = await readCache();
+    delete cache.compiled.tokenizerPolicy;
+    // Model stale postings that cannot recall the new identifier components.
+    cache.compiled.fieldPostings = cache.compiled.fieldPostings.filter(([term]: [string]) =>
+      !['auth', 'token', 'server'].includes(term));
+    await writeFile(join(root, 'search-cache.json'), JSON.stringify(cache));
+    const reader = new WikiIndexer({ workflowRoot: root, role: 'reader', includeCliSessions: false });
+    const subject = reader as unknown as { buildIndexCandidate: () => Promise<never> };
+    subject.buildIndexCandidate = async () => { throw new Error('canonical v9 entries must load'); };
+    const rebuilt = await reader.getSearchIndexWithMeta();
+    expect(rebuilt.cacheState).toBe('cold-build');
+    expect(queries.map(query => searchBM25Planned(rebuilt.index, query, 10))).toEqual(expected);
+    await reader.close();
+  });
+
+  it.each([false, true])('preserves exact singleton cold/warm parity (compiled=%s)', async compiled => {
+    await writeFile(join(root, 'specs', 'singleton.md'), '---\ntitle: R\ntags:\n  - 锁\n---\n');
+    const { indexer } = await publish(compiled);
+    const cold = await indexer.getSearchIndex();
+    const queries = ['R', '锁'];
+    const expected = queries.map(query => searchBM25Planned(cold, query, 10));
+    for (const results of expected) expect(results.map(result => result.docId)).toEqual(['spec:project:singleton']);
+    await indexer.close();
+
+    const reader = new WikiIndexer({ workflowRoot: root, role: 'reader', includeCliSessions: false });
+    const subject = reader as unknown as { buildIndexCandidate: () => Promise<never> };
+    subject.buildIndexCandidate = async () => { throw new Error('canonical singleton entries must load'); };
+    const warm = await reader.getSearchIndexWithMeta();
+    expect(warm.cacheState).toBe(compiled ? 'cache-hit' : 'cold-build');
+    expect(queries.map(query => searchBM25Planned(warm.index, query, 10))).toEqual(expected);
+    for (const query of queries) {
+      const results = await reader.searchWithMeta(query, 10, { skipEmbedding: true });
+      expect(results.results.map(result => result.entry.id)).toEqual(['spec:project:singleton']);
+    }
+    await reader.close();
+  });
+
   it('does not activate persisted compiled postings after the feature is disabled', async () => {
     const { indexer } = await publish(true);
     await indexer.close();
@@ -162,6 +214,15 @@ describe('WikiIndexer search-cache compatibility and compiled postings', () => {
   });
 
   it.each([
+    ['missing-tokenizer-policy', (compiled: Record<string, any>) => {
+      delete compiled.tokenizerPolicy;
+    }],
+    ['old-tokenizer-policy', (compiled: Record<string, any>) => {
+      compiled.tokenizerPolicy = 'legacy';
+    }],
+    ['schema-with-wrong-version', (compiled: Record<string, any>) => {
+      compiled.version = 99;
+    }],
     ['generation', (compiled: Record<string, any>, cache: Record<string, any>) => {
       compiled.generation = cache.generatedAt + 1;
     }],
