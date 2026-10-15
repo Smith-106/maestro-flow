@@ -21,6 +21,7 @@ import { truncate, extractSnippet, highlightTerms } from '../utils/cli-format.js
 import { knowhowFileToWikiId } from '../utils/frontmatter.js';
 import { isDeprecatedKnowledgeEntry } from '../utils/knowledge-lifecycle.js';
 import { recordSearchUsage } from './search-usage.js';
+import { compactSearchPayload, linkedCodeWarnings, renderCompactSearch, safeSearchText } from './search-presentation.js';
 import type { SourceType } from '../graph/kg/db/types.js';
 import type { WikiIndexer } from '#maestro-dashboard/wiki/wiki-indexer.js';
 import type {
@@ -360,7 +361,8 @@ function familyKey(entry: WikiEntry): string {
   ) {
     return entry.id;
   }
-  return (entry.parent ?? entry.id).replace(/-\d{2,3}$/, '');
+  // Numeric suffixes are identities, not evidence of chunk provenance.
+  return entry.parent ?? entry.id;
 }
 
 function semanticTokens(entry: WikiEntry): Set<string> {
@@ -581,10 +583,8 @@ export async function runUnifiedSearch(q: string, opts: UnifiedSearchOptions & {
   const daemonResultUsable = (result: typeof daemonResult): boolean => Boolean(
     result?.ok === true
     && Array.isArray(result.results)
-    // A diagnostics-enabled caller can consume a pre-diagnostics daemon
-    // response that lacks the optional filter marker; ordinary callers retain
-    // the stricter filter contract.
-    && (!hasFacet || result.filtersApplied === true || (diagnostics && result.filtersApplied === undefined)),
+    // Observability must not relax the provider's filter contract.
+    && (!hasFacet || result.filtersApplied === true),
   );
   if (!readOnlyProbe) {
     // BM25 is both the default path and the semantic safety net. Establish a
@@ -646,7 +646,7 @@ export async function runUnifiedSearch(q: string, opts: UnifiedSearchOptions & {
   const usableDaemonResult = !readOnlyProbe
     && daemonResult?.ok === true
     && Array.isArray(daemonResult.results)
-    && (!hasFacet || daemonResult.filtersApplied === true || (diagnostics && daemonResult.filtersApplied === undefined))
+    && (!hasFacet || daemonResult.filtersApplied === true)
       ? daemonResult
       : null;
 
@@ -669,7 +669,7 @@ export async function runUnifiedSearch(q: string, opts: UnifiedSearchOptions & {
     if (diagnostics && !daemonFailureObserved && !readOnlyProbe) {
       diagnostics.recordFallback('daemon', daemonFailureReason(daemonResult, workflowRoot));
     }
-    if (!readOnlyProbe && daemonResult === null && !_daemonFallbackNoted && readDaemonInfo(workflowRoot)) {
+    if (!readOnlyProbe && opts.skipEmbedding === false && daemonResult === null && !_daemonFallbackNoted && readDaemonInfo(workflowRoot)) {
       _daemonFallbackNoted = true;
       console.error('Note: search daemon unreachable — falling back to BM25-only (embedding disabled)');
     }
@@ -1446,7 +1446,6 @@ export async function runCodeSearch(
 
   let pass = await runPass(adaptiveBudget);
   const passUniqueCount = new Set(pass.results.map(result => result.id)).size;
-  diagnostics?.setEligibleCandidateCount?.(passUniqueCount);
   if (adaptiveBudget) {
     const adaptiveCounts: SearchCandidateCounts = {
       candidateCount: pass.candidateCount,
@@ -1468,6 +1467,7 @@ export async function runCodeSearch(
     }
   }
 
+  diagnostics?.setEligibleCandidateCount?.(new Set(pass.results.map(result => result.id)).size);
   diagnostics?.setResultCount(pass.results.length);
   if (!includeLinkedCode) return { ...pass.local, results: pass.results };
   const linked = pass.linked!;
@@ -1718,6 +1718,7 @@ export function registerSearchCommand(program: Command): void {
     .option('--no-emb', 'Skip embedding, use BM25 only (backward-compatible explicit form)')
     .option('--diagnostics', 'Include bounded request-scoped JSON diagnostics')
     .option('--json', 'Output as JSON')
+    .option('--full', 'Preserve legacy verbose result fields and human formatting')
     .option('--limit <n>', 'Max results', '20')
     .option('--workflow-root <path>', 'project root containing .workflow', process.cwd())
     .action(async (queryParts: string[], opts) => {
@@ -1731,9 +1732,16 @@ export function registerSearchCommand(program: Command): void {
         if (!diagnostics) return undefined;
         return boundedSearchDiagnostics(finishSearchDiagnostics(diagnostics)) ?? undefined;
       };
-      const withDiagnostics = <T extends Record<string, unknown>>(payload: T): T & { diagnostics?: SearchDiagnostics } => {
+      const withDiagnostics = <T extends object>(payload: T): T & { diagnostics?: SearchDiagnostics } => {
         const snapshot = diagnosticsPayload();
         return snapshot ? { ...payload, diagnostics: snapshot } : payload;
+      };
+      const outputCompact = (payload: Parameters<typeof compactSearchPayload>[0]): boolean => {
+        if (opts.full === true) return false;
+        const compact = compactSearchPayload(payload);
+        if (opts.json) console.log(JSON.stringify(withDiagnostics(compact), null, 2));
+        else for (const line of renderCompactSearch(compact)) console.log(line);
+        return true;
       };
       try {
         const resolvedTag = opts.tag ?? opts.kind;
@@ -1824,16 +1832,17 @@ export function registerSearchCommand(program: Command): void {
           }, null, 2));
           return;
         }
-        const status = exact.truncated ? ', truncated' : '';
-        console.log(`Search: "${q}" (exact ${exact.results.length} result${exact.results.length === 1 ? '' : 's'}${status})`);
+        const human = opts.full === true ? (text: string) => text : safeSearchText;
+        const status = `${exact.truncated ? ', truncated' : ''}${exact.timedOut ? ', timed out; incomplete' : ''}`;
+        console.log(`Search: "${human(q)}" (exact ${exact.results.length} result${exact.results.length === 1 ? '' : 's'}${status})`);
         if (exact.results.length === 0) {
           console.log('  No matches found.');
           return;
         }
         for (const result of exact.results) {
           const workspaceTag = result.workspace ? `  @${result.workspace}` : '';
-          console.log(`  [exact]  ${result.filePath}:${result.line}:${result.column}${workspaceTag}`);
-          if (result.preview) console.log(`    ${result.preview}`);
+          console.log(human(`  [exact]  ${result.filePath}:${result.line}:${result.column}${workspaceTag}`));
+          if (result.preview) console.log(`    ${human(result.preview)}`);
         }
         return;
       }
@@ -1863,6 +1872,7 @@ export function registerSearchCommand(program: Command): void {
         const merged = mergeAndNormalize([], [], limit, q, templateResults);
         diagnostics?.setResultCount(merged.length);
         const templateHint = `For exact template lookup, use: ${templateSearchCommand}`;
+        if (outputCompact({ query: q, count: merged.length, results: merged, ...(merged.length === 0 ? { hint: templateHint } : {}) })) return;
         if (opts.json) {
           console.log(JSON.stringify(withDiagnostics({
             query: q,
@@ -1907,6 +1917,7 @@ export function registerSearchCommand(program: Command): void {
         );
         diagnostics?.setProvider('kg');
         diagnostics?.setResultCount(kgResults.length);
+        if (outputCompact({ query: q, count: kgResults.length, results: kgResults })) return;
         if (opts.json) {
           diagnostics?.setProvider('kg');
           console.log(JSON.stringify(withDiagnostics({ query: q, engine: 'maestrograph', count: kgResults.length, summary, results: kgResults }), null, 2));
@@ -1986,6 +1997,8 @@ export function registerSearchCommand(program: Command): void {
       }
       const codeResults = codeOutcome.results;
       const codeHint = wikiOnly ? null : codeIndexHint(codeOutcome.status);
+      const warnings = linkedCodeWarnings(codeOutcome);
+      const warningPayload = warnings.length > 0 ? { warnings } : {};
       if (codeOnly) diagnostics?.setResultCount(codeResults.length);
 
       const meta = getLastSearchMeta();
@@ -1993,6 +2006,7 @@ export function registerSearchCommand(program: Command): void {
 
       // --code: code graph results only
       if (codeOnly) {
+        if (outputCompact({ query: q, count: codeResults.length, results: codeResults.map(result => ({ ...result, source: 'code' })), ...(codeHint ? { hint: codeHint } : {}), ...warningPayload })) return;
         if (opts.json) {
           diagnostics?.setResultCount(codeResults.length);
           console.log(JSON.stringify(withDiagnostics({
@@ -2000,11 +2014,13 @@ export function registerSearchCommand(program: Command): void {
             count: codeResults.length,
             codeIndex: codeOutcome.status,
             ...(codeHint ? { hint: codeHint } : {}),
+            ...warningPayload,
             results: codeResults,
           }), null, 2));
           return;
         }
         console.log(`Search: "${q}" (code ${codeResults.length}, ${embTag})`);
+        for (const warning of warnings) console.log(`  Warning: ${safeSearchText(warning)}`);
         if (codeResults.length === 0) {
           console.log('  No matches found.');
           if (codeHint) console.log(`  Hint: ${codeHint}`);
@@ -2022,6 +2038,7 @@ export function registerSearchCommand(program: Command): void {
       const codeCount = merged.filter(r => r.source === 'code').length;
       const templateCount = merged.filter(r => r.source === 'arch-kb').length;
       diagnostics?.setResultCount(merged.length);
+      if (outputCompact({ query: q, count: merged.length, results: merged, ...(codeHint ? { hint: codeHint } : {}), ...warningPayload })) return;
 
       if (opts.json) {
         const typeCountsJson: Record<string, number> = {};
@@ -2043,6 +2060,7 @@ export function registerSearchCommand(program: Command): void {
           codeIndex: codeOutcome.status,
           ...(codeHint ? { codeIndexHint: codeHint } : {}),
           typeCounts: typeCountsJson,
+          ...warningPayload,
           count: merged.length,
           results: merged,
         }), null, 2));
@@ -2073,6 +2091,7 @@ export function registerSearchCommand(program: Command): void {
         ? `${countParts.join(' + ')} = ${merged.length} results`
         : '0 results';
       console.log(`Search: "${q}" (${countSummary}, ${embTag})`);
+      for (const warning of warnings) console.log(`  Warning: ${safeSearchText(warning)}`);
       if (codeHint) console.log(`  Note: ${codeHint}`);
 
       if (qTerms.length > 4) {
@@ -2115,9 +2134,8 @@ export function registerSearchCommand(program: Command): void {
         }
       }
       } finally {
-        // Keep human-readable stdout byte-for-byte compatible. Diagnostics are
-        // machine-readable and therefore emitted on stderr unless --json has
-        // already embedded them in the response object.
+        // Diagnostics remain separate from presentation: stderr for human
+        // output, an opt-in bounded field for either JSON representation.
         if (diagnostics && !opts.json) {
           console.error(JSON.stringify({ diagnostics: diagnosticsPayload() }));
         }

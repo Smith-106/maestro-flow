@@ -62,9 +62,32 @@ maestro search "jwt token" --no-emb
 # 有界 request-scoped 诊断；--json 时嵌入响应，否则写入 stderr
 maestro search "jwt token" --diagnostics --json
 
-# JSON 输出（适合脚本消费）
+# 默认紧凑 JSON（适合脚本消费）
 maestro search "jwt token" --json
+
+# 保留原有详细 JSON 字段、分数、来源计数和拓扑
+maestro search "jwt token" --full --json
 ```
+
+### 紧凑输出与兼容性
+
+mixed、wiki、code、KG 和 template 搜索默认使用紧凑文本与 JSON。
+JSON 保留 `query`、`count`、`results` 及可操作的提示/警告。结果包含
+`source`、`id`、`kind`、`name`，以及可用时的一段有效 `preview`、文件坐标和
+有意义的 linked workspace/repository 边界。模板仍显式标记 `referenceOnly`；
+低/争议置信度、非正常生命周期状态和显式 repository applicability 保留。
+分数、重复摘要、current/active/null 元数据、拓扑和分项计数不再默认输出。
+人类文本中的名称/摘录压为单行并移除终端控制序列；机器 JSON 值不做终端清洗。
+
+`--full` 恢复原有文本格式，`--full --json` 恢复原 JSON 字段和结构。
+该投影仅发生在 CLI 展示层，不改变内部 provider API、顺序、分数、授权或适用性。
+部分 linked code 源失败时，即便已有正常结果也输出有界警告。
+`--diagnostics` 仍为独立的有界 opt-in：JSON 增加 `diagnostics`，文本模式写入 stderr；
+它不会放宽 daemon 的过滤契约。普通 BM25 回退保持安静；显式 `--semantic`
+在 resident daemon 不可达时可提示语义回退。
+
+独立 `--exact` 路由的紧凑/完整 JSON 均保留文件/行/列、`truncated`、`timedOut`
+和 `bytesUsed`；文本仍显示不完整/超时警告。
 
 ### 查询最佳实践
 
@@ -491,7 +514,7 @@ CJK 分词为 bigram + trigram 级别，短查询（2 字以下）可能匹配�
 
 ```bash
 # 统一搜索（推荐）
-maestro search <query> [--type <type>] [--category <cat>] [--kind <kind>] [--code] [--kg] [--semantic|--no-emb] [--json]
+maestro search <query> [--type <type>] [--category <cat>] [--kind <kind>] [--code] [--kg] [--semantic|--no-emb] [--json] [--full]
 
 # Wiki 系统搜索
 maestro wiki search <query> [--json]

@@ -45,9 +45,37 @@ maestro search "UserService"
 # Skip embedding, use BM25 only (avoid ONNX cold start)
 maestro search "jwt token" --no-emb
 
-# JSON output (for script consumption)
+# Compact JSON output (for script consumption)
 maestro search "jwt token" --json
+
+# Legacy verbose JSON (scores, source counts, topology and original fields)
+maestro search "jwt token" --full --json
+
+# Bounded request diagnostics, independent of compact/full presentation
+maestro search "jwt token" --diagnostics --json
 ```
+
+### Compact output and compatibility
+
+Human text and JSON are compact by default for mixed, wiki, code, KG and template searches.
+JSON retains `query`, `count`, `results`, and actionable hints/warnings. Each result contains
+`source`, `id`, `kind`, `name`, one useful `preview` when available, code/file coordinates,
+and meaningful linked workspace/repository boundaries. Template results remain explicitly
+`referenceOnly`; low/contested confidence, non-active lifecycle warnings and explicit repository
+applicability are retained. Scores, duplicate excerpts, current/active/null metadata, topology
+and breakdown counts are omitted. Human names/previews are single-line and terminal controls
+are removed; raw machine JSON values are not terminal-sanitized.
+
+Use `--full` for the previous text formatting or `--full --json` for the original JSON fields
+and structure. This is a CLI-only projection: internal provider APIs, result ordering, scores,
+authorization and applicability do not change. Partial linked-code failures are bounded warnings,
+even alongside successful results. `--diagnostics` remains an independent bounded opt-in:
+JSON includes `diagnostics`; human mode writes diagnostics to stderr. It does not relax daemon
+filter acceptance. Ordinary BM25 fallback is quiet; explicit `--semantic` may warn when a
+resident daemon is unreachable.
+
+`--exact` is a separate literal-occurrence route: compact/full JSON both preserve coordinates,
+`truncated`, `timedOut`, and `bytesUsed`; human output retains incomplete/timeout warnings.
 
 ### Query Best Practices
 
@@ -458,7 +486,7 @@ If an entry has abnormally high score, it may be due to:
 
 ```bash
 # Unified search (recommended)
-maestro search <query> [--type <type>] [--category <cat>] [--kind <kind>] [--code] [--kg] [--semantic|--no-emb] [--json]
+maestro search <query> [--type <type>] [--category <cat>] [--kind <kind>] [--code] [--kg] [--semantic|--no-emb] [--json] [--full]
 
 # Wiki system search
 maestro wiki search <query> [--json]
