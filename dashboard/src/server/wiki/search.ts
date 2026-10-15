@@ -940,14 +940,13 @@ export function buildQueryPlan(query: string, index?: InvertedIndex): QueryPlan 
   }
   const rawParts = query.split(/\s+/).filter(Boolean);
   const tokens: QueryTokenClassification[] = [];
-  const seen = new Set<string>();
+  const requirements = new Map<string, QueryTokenClassification>();
+  const requirementTerms = new Map<string, Set<string>>();
 
   for (const raw of rawParts) {
     const normalized = raw.toLowerCase();
-    // Coverage is over unique searchable requirements, not raw punctuation or
-    // repeated words. Filtering here also keeps duplicate parts out of groups.
-    if (seen.has(normalized) || tokenize(raw).length === 0) continue;
-    seen.add(normalized);
+    const terms = tokenize(raw);
+    if (terms.length === 0) continue;
     let role: QueryTermRole;
     let weight: number;
 
@@ -964,8 +963,24 @@ export function buildQueryPlan(query: string, index?: InvertedIndex): QueryPlan 
       weight = 1.0;
     }
 
-    tokens.push({ raw, normalized, role, weight });
+    // Case-equivalent parts are one requirement, but case carries identifier
+    // boundaries. Preserve every searchable component and the strongest role;
+    // choose a stable representative rather than letting input order decide.
+    const existing = requirements.get(normalized);
+    if (existing) {
+      for (const term of terms) requirementTerms.get(normalized)!.add(term);
+      if (weight > existing.weight || (weight === existing.weight && raw < existing.raw)) {
+        Object.assign(existing, { raw, role, weight });
+      }
+    } else {
+      const token = { raw, normalized, role, weight };
+      tokens.push(token);
+      requirements.set(normalized, token);
+      requirementTerms.set(normalized, new Set(terms));
+    }
   }
+  const termsFor = (token: QueryTokenClassification): string[] =>
+    [...requirementTerms.get(token.normalized)!].sort();
 
   const anchors = tokens.filter(t => t.role === 'anchor');
   const cores = tokens.filter(t => t.role === 'core');
@@ -974,7 +989,7 @@ export function buildQueryPlan(query: string, index?: InvertedIndex): QueryPlan 
   const groups: QueryPlanGroup[] = [];
 
   if (anchors.length > 0) {
-    const anchorTerms = anchors.flatMap(a => tokenize(a.raw));
+    const anchorTerms = anchors.flatMap(termsFor);
     groups.push({
       role: 'anchor',
       weightedTerms: expandQueryTerms(anchorTerms, index).map(wt => ({ ...wt, coverageKey: undefined })),
@@ -983,7 +998,7 @@ export function buildQueryPlan(query: string, index?: InvertedIndex): QueryPlan 
   }
 
   if (cores.length > 0 || (anchors.length > 0 && contexts.length > 0)) {
-    const coreAndContextTerms = [...cores, ...contexts].flatMap(t => tokenize(t.raw));
+    const coreAndContextTerms = [...cores, ...contexts].flatMap(termsFor);
     if (coreAndContextTerms.length > 0) {
       groups.push({
         role: 'core',
@@ -994,7 +1009,7 @@ export function buildQueryPlan(query: string, index?: InvertedIndex): QueryPlan 
   }
 
   if (anchors.length > 0 && cores.length > 0) {
-    const allTerms = [...anchors, ...cores].flatMap(t => tokenize(t.raw));
+    const allTerms = [...anchors, ...cores].flatMap(termsFor);
     groups.push({
       role: 'core',
       weightedTerms: expandQueryTerms(allTerms, index).map(wt => ({ ...wt, coverageKey: undefined })),
@@ -1003,7 +1018,7 @@ export function buildQueryPlan(query: string, index?: InvertedIndex): QueryPlan 
   }
 
   if (groups.length === 0) {
-    const allTerms = tokens.flatMap(t => tokenize(t.raw));
+    const allTerms = tokens.flatMap(termsFor);
     groups.push({
       role: 'core',
       weightedTerms: expandQueryTerms(allTerms, index).map(wt => ({ ...wt, coverageKey: undefined })),
@@ -1013,7 +1028,7 @@ export function buildQueryPlan(query: string, index?: InvertedIndex): QueryPlan 
 
   const coreCoverageTerms: CoverageTerm[] = [...anchors, ...cores].map(t => ({
     key: t.normalized,
-    terms: tokenize(t.raw),
+    terms: termsFor(t),
     weight: t.weight,
   }));
 

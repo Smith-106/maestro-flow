@@ -378,7 +378,9 @@ function finalizeSearchResults(
   const parentCounts = new Map<string, number>();
   for (const result of eligible) {
     if (seen.has(result.entry.id)) continue;
-    const parentKey = result.entry.parent ?? result.entry.id.replace(/-\d{2,3}$/, '');
+    // Numeric suffixes can identify independent documents (e.g. HTTP statuses).
+    // Only explicit parent metadata establishes a shared chunk family.
+    const parentKey = result.entry.parent ?? result.entry.id;
     const parentCount = parentCounts.get(parentKey) ?? 0;
     if (parentCount >= SEARCH_PARENT_CAP) continue;
     seen.add(result.entry.id);

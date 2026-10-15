@@ -250,6 +250,47 @@ describe('lexical recall regressions', () => {
     expect(buildQueryPlan('? a').coreCoverageTerms).toEqual([]);
   });
 
+  it('merges case-equivalent identifier requirements identically for every permutation', () => {
+    const variants = ['AuthToken', 'AuThToken', 'authtoken'];
+    const permutations = [
+      [0, 1, 2], [0, 2, 1], [1, 0, 2],
+      [1, 2, 0], [2, 0, 1], [2, 1, 0],
+    ].map(order => order.map(index => variants[index]).join(' '));
+    const expected = buildQueryPlan(permutations[0]);
+    const terms = ['au', 'auth', 'authtoken', 'th', 'token'];
+    for (const query of permutations) {
+      const plan = buildQueryPlan(query);
+      expect(plan.tokens, query).toHaveLength(1);
+      expect(plan.tokens[0], query).toMatchObject({ normalized: 'authtoken', role: 'anchor', weight: 1.4 });
+      expect(plan.coreCoverageTerms, query).toEqual([{ key: 'authtoken', terms, weight: 1.4 }]);
+      expect(plan.tokens, query).toEqual(expected.tokens);
+      expect(plan.groups, query).toEqual(expected.groups);
+      expect(plan.groups[0].weightedTerms.filter(term => term.weight === 1).map(term => term.term), query)
+        .toEqual(terms);
+    }
+  });
+
+  it('preserves component relevance and exact scores regardless of duplicate identifier order', () => {
+    const index = buildInvertedIndex([
+      entry('complete', 'Auth token', ''),
+      entry('partial', 'Auth', ''),
+      entry('joined', 'authtoken', ''),
+      entry('unrelated', 'Release workflow', ''),
+    ]);
+    const expected = searchBM25Planned(index, 'AuthToken', 10);
+    const complete = expected.find(result => result.docId === 'complete')!;
+    const partial = expected.find(result => result.docId === 'partial')!;
+    expect(complete.score).toBeGreaterThan(partial.score);
+    expect(expected.map(result => result.docId).sort()).toEqual(['complete', 'joined', 'partial']);
+    for (const query of ['AuthToken authtoken', 'authtoken AuthToken', 'authtoken AuthToken AUTHTOKEN']) {
+      expect(searchBM25Planned(index, query, 10), query).toEqual(expected);
+      expect(buildQueryPlan(query).coreCoverageTerms, query).toEqual(buildQueryPlan('AuthToken').coreCoverageTerms);
+    }
+    // Ordinary repeated/case variants still represent exactly one requirement.
+    expect(buildQueryPlan('cache CACHE cache').coreCoverageTerms)
+      .toEqual([{ key: 'cache', terms: ['cache'], weight: 1 }]);
+  });
+
   it('credits all overlapping coverage keys without scoring a posting twice', () => {
     const index = buildInvertedIndex([
       entry('overlap', '缓存器', ''),

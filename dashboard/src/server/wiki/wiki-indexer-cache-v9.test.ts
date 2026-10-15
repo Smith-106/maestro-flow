@@ -179,6 +179,47 @@ describe('WikiIndexer search-cache compatibility and compiled postings', () => {
     await reader.close();
   });
 
+  it.each([false, true])('preserves independent numeric IDs and explicit parent caps in public cold/warm search (compiled=%s)', async compiled => {
+    const independentIds = ['http-400', 'http-401', 'http-404'].map(id => `spec:project:${id}`);
+    for (const status of [400, 401, 404]) {
+      await writeFile(join(root, 'specs', `http-${status}.md`),
+        `---\ntitle: HTTP ${status} response reference\n---\nHTTP response reference for status ${status}.\n`);
+    }
+    for (let chunk = 1; chunk <= 4; chunk++) {
+      await writeFile(join(root, 'specs', `response-chunk-${chunk}.md`),
+        `---\ntitle: HTTP response chunk ${chunk}\nparent: response-guide\n---\nHTTP response reference chunk.\n`);
+    }
+    const assertPublicResults = async (indexer: WikiIndexer) => {
+      const result = await indexer.searchWithMeta('http response', 10, { skipEmbedding: true });
+      expect(result.embeddingUsed).toBe(false);
+      expect(result.results.filter(hit => hit.entry.parent === 'response-guide')).toHaveLength(2);
+      expect(result.results.filter(hit => hit.entry.parent === null).map(hit => hit.entry.id).sort())
+        .toEqual(independentIds);
+      expect(result.results).toHaveLength(5);
+      for (const status of [400, 401, 404]) {
+        const exact = await indexer.search(`http ${status}`, 1, { skipEmbedding: true });
+        expect(exact.map(entry => entry.id)).toEqual([`spec:project:http-${status}`]);
+      }
+    };
+    const { indexer } = await publish(compiled);
+    try {
+      await assertPublicResults(indexer);
+    } finally {
+      await indexer.close();
+    }
+
+    const reader = new WikiIndexer({ workflowRoot: root, role: 'reader', includeCliSessions: false });
+    try {
+      const subject = reader as unknown as { buildIndexCandidate: () => Promise<never> };
+      subject.buildIndexCandidate = async () => { throw new Error('numeric IDs must load from canonical cache'); };
+      const warm = await reader.getSearchIndexWithMeta();
+      expect(warm.cacheState).toBe(compiled ? 'cache-hit' : 'cold-build');
+      await assertPublicResults(reader);
+    } finally {
+      await reader.close();
+    }
+  });
+
   it('does not activate persisted compiled postings after the feature is disabled', async () => {
     const { indexer } = await publish(true);
     await indexer.close();
