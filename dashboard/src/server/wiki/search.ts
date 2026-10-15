@@ -297,7 +297,7 @@ export interface InvertedIndexValidationOptions {
 }
 
 const SERIALIZED_BM25F_VERSION = 1;
-const TOKENIZER_POLICY = 'lexical/3';
+const TOKENIZER_POLICY = 'lexical/4';
 const MAX_COMPILED_TERMS = 1_000_000;
 const MAX_COMPILED_POSTINGS = 4_000_000;
 const MAX_COMPILED_DOCS = 1_000_000;
@@ -599,8 +599,15 @@ function exactLatinSingletonTerm(text: string): string | undefined {
   return /^[a-z]$/.test(normalized) ? `\0singleton:${normalized}` : undefined;
 }
 
+function metadataSingletonTerm(text: string): string | undefined {
+  const normalized = text.trim();
+  return normalized.length === 1 && HAS_CJK.test(normalized)
+    ? `\0cjk:${normalized}`
+    : exactLatinSingletonTerm(text);
+}
+
 function tokenizeSearchQuery(query: string): string[] {
-  const singleton = exactLatinSingletonTerm(query);
+  const singleton = metadataSingletonTerm(query);
   return singleton ? [singleton] : tokenize(query);
 }
 
@@ -702,6 +709,15 @@ export function buildInvertedIndex(entries: WikiEntry[]): InvertedIndex {
       if (f === 'title' || f === 'tags') {
         const texts = f === 'title' ? [entry.title] : entry.tags;
         const exactTerms = new Set(texts.map(exactLatinSingletonTerm));
+        // One posting per distinct Han character in title/individual tags only.
+        // Do not change ordinary ngram TF or field lengths: multi-character
+        // queries retain their existing normalization and ranking. Metadata
+        // containing Han already has at least one ordinary token (TF is 1).
+        for (const text of texts) {
+          for (const run of text.match(CJK_RUN) ?? []) {
+            for (const character of run) exactTerms.add(`\0cjk:${character}`);
+          }
+        }
         for (const term of exactTerms) {
           if (!term) continue;
           let frequencies = termFields.get(term);
@@ -710,8 +726,10 @@ export function buildInvertedIndex(entries: WikiEntry[]): InvertedIndex {
             termFields.set(term, frequencies);
           }
           frequencies[f]++;
-          lengths[f]++;
-          totalFieldLengths[f]++;
+          if (!term.startsWith('\0cjk:')) {
+            lengths[f]++;
+            totalFieldLengths[f]++;
+          }
         }
       }
     }
@@ -928,7 +946,7 @@ function isCodeIdentifier(raw: string): boolean {
 }
 
 export function buildQueryPlan(query: string, index?: InvertedIndex): QueryPlan {
-  const singleton = exactLatinSingletonTerm(query);
+  const singleton = metadataSingletonTerm(query);
   if (singleton) {
     const normalized = query.trim().toLowerCase();
     return {

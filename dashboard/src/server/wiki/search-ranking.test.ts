@@ -17,6 +17,8 @@ vi.mock('./search.js', async importOriginal => {
 import {
   buildInvertedIndex,
   buildQueryPlan,
+  deserializeInvertedIndex,
+  serializeInvertedIndex,
   searchBM25,
   searchBM25Planned,
   tokenize,
@@ -185,7 +187,7 @@ describe('lexical recall regressions', () => {
     }
   });
 
-  it('supports exact title/tag singleton lookup without admitting Latin body or CJK substring unigrams', () => {
+  it('supports exact title/tag singleton lookup without admitting Latin body singletons', () => {
     const index = buildInvertedIndex([
       entry('r-title', 'R', ''),
       entry('r-tag', 'Statistics', '', { tags: ['R'] }),
@@ -201,7 +203,7 @@ describe('lexical recall regressions', () => {
         expect(search(index, query, 1, undefined, new Set(['r-tag'])).map(result => result.docId))
           .toEqual(['r-tag']);
       }
-      expect(search(index, '锁', 10).map(result => result.docId).sort()).toEqual(['cjk-tag', 'cjk-title']);
+      expect(search(index, '锁', 10).map(result => result.docId).sort()).toEqual(['cjk-substring', 'cjk-tag', 'cjk-title']);
     }
     expect(tokenize('R')).toEqual([]);
     expect(tokenize('读写锁')).toEqual(['读写', '写锁', '读写锁']);
@@ -211,6 +213,38 @@ describe('lexical recall regressions', () => {
     expect(exact).toHaveLength(1);
     expect(exact[0][1]).toHaveLength(2);
     expect(exact[0][1].every(posting => posting.fieldTfs.body === 0)).toBe(true);
+  });
+
+  it('bounds CJK singleton recall to title and individual tags with serialized and scoped parity', () => {
+    const entries = [
+      entry('title', '读写锁', ''),
+      entry('tag', 'Concurrency', '', { tags: ['互斥锁'] }),
+      entry('body-only', 'Notes', '读写锁 '.repeat(200), { summary: '锁 '.repeat(100), category: '锁' }),
+      entry('noise', '读写缓存', '锁 '.repeat(200)),
+    ];
+    const cold = buildInvertedIndex(entries);
+    const serialized = serializeInvertedIndex(cold);
+    const warm = deserializeInvertedIndex(JSON.parse(JSON.stringify(serialized)))!;
+    expect(warm).not.toBeNull();
+    for (const search of [searchBM25, searchBM25Planned]) {
+      for (const index of [cold, warm]) {
+        expect(search(index, '锁', 10).map(hit => hit.docId).sort()).toEqual(['tag', 'title']);
+        expect(search(index, ' 锁 ', 1, undefined, new Set(['tag'])).map(hit => hit.docId)).toEqual(['tag']);
+        expect(search(index, '读写锁', 10)).toEqual(search(cold, '读写锁', 10));
+      }
+      // Removing the metadata-only acceleration cannot change multi-character scores.
+      const previous = { ...cold, fieldPostings: new Map([...cold.fieldPostings].filter(([term]) =>
+        !term.startsWith('\u0000cjk:'))) };
+      expect(search(cold, '读写锁', 10)).toEqual(search(previous, '读写锁', 10));
+    }
+    const added = serialized.fieldPostings.filter(([term]) => term.startsWith('\u0000cjk:'));
+    expect(added).toHaveLength(7);
+    expect(added.reduce((sum, [, postings]) => sum + postings.length, 0)).toBe(10);
+    expect(added.every(([, postings]) => postings.every(posting =>
+      posting.fieldTfs.summary === 0 && posting.fieldTfs.body === 0))).toBe(true);
+    // Per-document postings are bounded by distinct title/tag Han characters,
+    // independent of the 600 repeated body/summary characters above.
+    expect(added.reduce((sum, [, postings]) => sum + postings.length, 0)).toBeLessThanOrEqual(10);
   });
 
   it('gives explicit synonym originals full weight regardless of order', () => {

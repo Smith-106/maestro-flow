@@ -179,6 +179,46 @@ describe('WikiIndexer search-cache compatibility and compiled postings', () => {
     await reader.close();
   });
 
+  it.each([false, true])('recalls CJK metadata substrings through public cold/canonical/compiled search (compiled=%s)', async compiled => {
+    await writeFile(join(root, 'specs', 'cjk-title.md'), '---\ntitle: 读写锁\n---\n');
+    await writeFile(join(root, 'specs', 'cjk-tag.md'), '---\ntitle: Concurrency\ntags:\n  - 互斥锁\n---\n');
+    await writeFile(join(root, 'specs', 'cjk-body.md'), '---\ntitle: Notes\nsummary: 锁\n---\n读写锁 锁\n');
+    const expectedIds = ['spec:project:cjk-tag', 'spec:project:cjk-title'];
+    const assertPublic = async (reader: WikiIndexer) => {
+      const hits = await reader.searchWithMeta('锁', 10, {
+        skipEmbedding: true,
+        credibilityFactors: new Map(expectedIds.map(id => [id, 1])),
+      });
+      expect(hits.results.map(hit => hit.entry.id).sort()).toEqual(expectedIds);
+      return hits.results.map(hit => hit.entry.id);
+    };
+    const { indexer } = await publish(compiled);
+    const expected = await assertPublic(indexer);
+    const lexicalExpected = searchBM25Planned(await indexer.getSearchIndex(), '锁', 10);
+    await indexer.close();
+    const cache = await readCache();
+    const canonicalEntries = JSON.stringify(cache.entries);
+    const reader = new WikiIndexer({ workflowRoot: root, role: 'reader', includeCliSessions: false });
+    expect((await reader.getSearchIndexWithMeta()).cacheState).toBe(compiled ? 'cache-hit' : 'cold-build');
+    expect(await assertPublic(reader)).toEqual(expected);
+    expect(searchBM25Planned(await reader.getSearchIndex(), '锁', 10)).toEqual(lexicalExpected);
+    await reader.close();
+    if (compiled) {
+      expect(cache.compiled.tokenizerPolicy).toBe('lexical/4');
+      cache.compiled.tokenizerPolicy = 'lexical/3';
+      cache.compiled.fieldPostings = cache.compiled.fieldPostings.filter(([term]: [string]) => !term.startsWith('\u0000cjk:'));
+      await writeFile(join(root, 'search-cache.json'), JSON.stringify(cache));
+      const stale = new WikiIndexer({ workflowRoot: root, role: 'reader', includeCliSessions: false });
+      const subject = stale as unknown as { buildIndexCandidate: () => Promise<never> };
+      subject.buildIndexCandidate = async () => { throw new Error('canonical entries must survive policy changes'); };
+      expect((await stale.getSearchIndexWithMeta()).cacheState).toBe('cold-build');
+      expect(await assertPublic(stale)).toEqual(expected);
+      expect(searchBM25Planned(await stale.getSearchIndex(), '锁', 10)).toEqual(lexicalExpected);
+      await stale.close();
+      expect(JSON.stringify((await readCache()).entries)).toBe(canonicalEntries);
+    }
+  });
+
   it.each([false, true])('preserves independent numeric IDs and explicit parent caps in public cold/warm search (compiled=%s)', async compiled => {
     const independentIds = ['http-400', 'http-401', 'http-404'].map(id => `spec:project:${id}`);
     for (const status of [400, 401, 404]) {
