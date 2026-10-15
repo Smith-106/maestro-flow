@@ -144,6 +144,10 @@ export interface SearchEvidenceEvent {
 export interface CodeSearchOutcome {
   results: CodeSearchResult[];
   status: CodeIndexStatus;
+  /** Request-local coverage, independent of useful results from linked providers.
+   * Optional for compatibility with existing internal provider implementations.
+   */
+  localStatus?: CodeIndexStatus;
   linkedFailures?: LinkedCodeSearchFailure[];
 }
 
@@ -1470,11 +1474,12 @@ export async function runCodeSearch(
 
   diagnostics?.setEligibleCandidateCount?.(new Set(pass.results.map(result => result.id)).size);
   diagnostics?.setResultCount(pass.results.length);
-  if (!includeLinkedCode) return { ...pass.local, results: pass.results };
+  if (!includeLinkedCode) return { ...pass.local, localStatus: pass.local.status, results: pass.results };
   const linked = pass.linked!;
   return {
     results: pass.results,
     status: pass.results.length > 0 ? 'ok' : pass.local.status,
+    localStatus: pass.local.status,
     ...(linked.failures.length > 0 ? { linkedFailures: linked.failures } : {}),
   };
 }
@@ -2002,7 +2007,7 @@ export function registerSearchCommand(program: Command): void {
         ]);
       }
       const codeResults = codeOutcome.results;
-      const codeHint = wikiOnly ? null : codeIndexHint(codeOutcome.status);
+      const codeHint = wikiOnly ? null : codeIndexHint(codeOutcome.localStatus ?? codeOutcome.status);
       const warnings = linkedCodeWarnings(codeOutcome);
       const warningPayload = warnings.length > 0 ? { warnings } : {};
       if (codeOnly) diagnostics?.setResultCount(codeResults.length);
@@ -2019,6 +2024,7 @@ export function registerSearchCommand(program: Command): void {
             query: q,
             count: codeResults.length,
             codeIndex: codeOutcome.status,
+            ...(codeOutcome.localStatus ? { localStatus: codeOutcome.localStatus } : {}),
             ...(codeHint ? { hint: codeHint } : {}),
             ...warningPayload,
             results: codeResults,
@@ -2032,6 +2038,7 @@ export function registerSearchCommand(program: Command): void {
           if (codeHint) console.log(`  Hint: ${codeHint}`);
           return;
         }
+        if (codeHint) console.log(`  Note: ${codeHint}`);
         for (const r of codeResults) {
           printCodeResult(r, '  ', isTTY, qTerms);
         }
@@ -2064,6 +2071,7 @@ export function registerSearchCommand(program: Command): void {
           codeCount,
           templateCount,
           codeIndex: codeOutcome.status,
+          ...(codeOutcome.localStatus ? { localStatus: codeOutcome.localStatus } : {}),
           ...(codeHint ? { codeIndexHint: codeHint } : {}),
           typeCounts: typeCountsJson,
           ...warningPayload,

@@ -18,6 +18,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { KgDatabaseConnection } from '../graph/kg/db/connection.js';
 import type { UnifiedNode } from '../graph/kg/db/types.js';
 import { MaestroGraph } from '../graph/kg/engine.js';
+import { createSearchDiagnostics } from '../search/diagnostics.js';
 import {
   registerSearchCommand,
   runCodeSearch,
@@ -141,6 +142,41 @@ afterEach(() => {
 });
 
 describe('linked CodeGraph search', () => {
+  it.each(['not-initialized', 'empty', 'error'] as const)('retains local %s with useful linked results and diagnostics parity', async status => {
+    const projectRoot = temporaryRoot(`local-${status}`);
+    const linkedRoot = join(projectRoot, 'linked');
+    await createGraph(linkedRoot, 'CoverageNeedle');
+    if (status === 'empty') await createGraphWithNodes(projectRoot, []);
+    if (status === 'error') {
+      mkdirSync(join(projectRoot, '.workflow', 'kg'), { recursive: true });
+      writeFileSync(join(projectRoot, '.workflow', 'kg', 'maestro.db'), 'not a sqlite database');
+    }
+    writeWorkspaceConfig(projectRoot, [{ name: 'library', path: linkedRoot, share: ['codebase'] }]);
+    const diagnostics = createSearchDiagnostics();
+    const outcome = await runCodeSearch('CoverageNeedle', 1, true, true, projectRoot, 'read-only-probe', diagnostics);
+    expect(outcome).toMatchObject({ status: 'ok', localStatus: status });
+    expect(outcome.results.map(r => r.id)).toEqual(['ws:library:code:function:shared']);
+    expect(outcome.linkedFailures).toBeUndefined();
+    expect(diagnostics.snapshot().fallbacks).toContainEqual({ source: 'kg', reason: status });
+    expect(diagnostics.snapshot().resultCount).toBe(1);
+    expect(await runCodeSearch('CoverageNeedle', 1, true, true, projectRoot, 'read-only-probe')).toEqual(outcome);
+    const localOnly = await runCodeSearch('CoverageNeedle', 1, true, false, projectRoot, 'read-only-probe');
+    expect(localOnly).toEqual({ results: [], status, localStatus: status });
+  });
+
+  it('distinguishes healthy no-match searches from empty indexes, with and without linked code', async () => {
+    const projectRoot = temporaryRoot('local-no-matches');
+    const linkedRoot = join(projectRoot, 'linked');
+    await createGraph(projectRoot, 'ExistingSymbol');
+    await createGraph(linkedRoot, 'ExistingSymbol');
+    writeWorkspaceConfig(projectRoot, [{ name: 'library', path: linkedRoot, share: ['codebase'] }]);
+    for (const includeLinked of [false, true]) {
+      const diagnostics = createSearchDiagnostics();
+      expect(await runCodeSearch('NoMatchAnywhere', 1, true, includeLinked, projectRoot, 'read-only-probe', diagnostics))
+        .toEqual({ results: [], status: 'ok', localStatus: 'ok' });
+      expect(diagnostics.snapshot().fallbacks).toEqual([]);
+    }
+  });
   it('is disabled by default and registers an explicit opt-in flag', async () => {
     const projectRoot = temporaryRoot('linked-default');
     const linkedRoot = join(projectRoot, 'linked');
@@ -191,6 +227,8 @@ describe('linked CodeGraph search', () => {
 
     expect(localOnly.results.map(result => result.id)).toEqual(['code:function:local']);
     expect(localOnly.results.every(result => result.workspace === undefined)).toBe(true);
+    expect(optedIn).toMatchObject({ status: 'ok', localStatus: 'ok' });
+    expect(localOnly).toMatchObject({ status: 'ok', localStatus: 'ok' });
     expect(optedIn.results.map(result => result.id)).toEqual([
       'code:function:local',
       'ws:linked:code:function:linked',
@@ -405,6 +443,7 @@ describe('linked CodeGraph search', () => {
 
     const outcome = await runCodeSearch('IsolationNeedle', 20, true, true, projectRoot);
 
+    expect(outcome).toMatchObject({ status: 'ok', localStatus: 'ok' });
     expect(outcome.results.map(result => result.id)).toEqual([
       'code:function:local',
       'ws:healthy:code:function:shared',

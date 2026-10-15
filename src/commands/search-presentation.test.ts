@@ -83,9 +83,9 @@ describe('compact CLI presentation', () => {
   it.each([['--type', 'template'], ['--code'], ['--kg'], [], ['--wiki-only']])('retains full human score formatting (%j)', async (...args) => {
     expect(await action([...args, '--full'])).toMatch(/\((?:1|10)\.0000\)|\(7\.0\)/);
   });
-  it('preserves legacy code JSON structure exactly with --full', async () => {
+  it('preserves full code JSON fields with additive local coverage', async () => {
     expect(JSON.parse(await action(['--code', '--json', '--full']))).toEqual({
-      query: 'query', count: 1, codeIndex: 'ok', results: [{ id: code.id, kind: code.kind, name: code.name,
+      query: 'query', count: 1, codeIndex: 'ok', localStatus: 'ok', results: [{ id: code.id, kind: code.kind, name: code.name,
         filePath: code.filePath, line: 17, score: 10, signature: code.signature, status: 'active' }],
     });
   });
@@ -217,6 +217,45 @@ describe('compact CLI presentation', () => {
       expect(output.warnings.join(' ')).toMatch(/library.*unavailable/);
       expect(await action([...args, '--include-linked-code'])).toMatch(/library.*unavailable/);
     }
+  });
+  it.each(['not-initialized', 'empty', 'error'] as const)('shows local %s alongside linked success across compact/full and diagnostics modes', async status => {
+    const linked = join(root, 'linked'); mkdirSync(join(linked, '.workflow'), { recursive: true });
+    writeFileSync(join(root, '.workflow', 'config.json'), JSON.stringify({ workspaces: { linked: [{ name: 'library', path: linked, share: ['codebase'] }] } }));
+    mocks.openLinked.mockResolvedValue({ searchCode: () => [code], close() {} });
+    if (status === 'not-initialized') rmSync(join(root, '.workflow', 'kg', 'maestro.db'));
+    if (status === 'empty') mocks.code.mockReturnValue([]);
+    if (status === 'error') mocks.code.mockImplementation(() => { throw new Error('SQLITE driver /secret/private.db'); });
+    const hint = status === 'not-initialized' ? 'maestro kg init' : status === 'empty' ? 'maestro kg sync' : 'MAESTRO_DEBUG=1';
+    for (const args of [['--code'], []]) {
+      for (const mode of [[], ['--full']]) {
+        const plain = JSON.parse(await action([...args, ...mode, '--include-linked-code', '--json']));
+        const diagnostic = JSON.parse(await action([...args, ...mode, '--include-linked-code', '--json', '--diagnostics']));
+        expect(plain.count).toBeGreaterThan(0);
+        expect(plain.hint ?? plain.codeIndexHint).toContain(hint);
+        expect(diagnostic.results).toEqual(plain.results);
+        expect(diagnostic.hint ?? diagnostic.codeIndexHint).toBe(plain.hint ?? plain.codeIndexHint);
+        expect(diagnostic.diagnostics.fallbacks).toContainEqual({ source: 'kg', reason: status });
+        expect(JSON.stringify(diagnostic)).not.toMatch(/SQLITE|private\.db|secret/);
+        expect(await action([...args, ...mode, '--include-linked-code'])).toContain(hint);
+        if (mode.length) expect(plain).toMatchObject({ codeIndex: 'ok', localStatus: status });
+        else expect(plain).not.toHaveProperty('localStatus');
+      }
+    }
+  });
+  it('does not warn for healthy local no-matches alongside linked results', async () => {
+    const linked = join(root, 'linked'); mkdirSync(join(linked, '.workflow'), { recursive: true });
+    writeFileSync(join(root, '.workflow', 'config.json'), JSON.stringify({ workspaces: { linked: [{ name: 'library', path: linked, share: ['codebase'] }] } }));
+    mocks.code.mockReturnValue([]);
+    // Empty query result != empty index.
+    const local = await import('../graph/kg/engine.js');
+    const open = vi.spyOn(local.MaestroGraph, 'open').mockResolvedValue({ searchCode: mocks.code, close() {}, getStats: () => ({ nodesBySourceType: { codegraph: 1 } }) } as never);
+    mocks.openLinked.mockResolvedValue({ searchCode: () => [code], close() {} });
+    const output = JSON.parse(await action(['--code', '--full', '--include-linked-code', '--json']));
+    expect(output).toMatchObject({ count: 1, codeIndex: 'ok', localStatus: 'ok' });
+    expect(output).not.toHaveProperty('hint');
+    expect(output).not.toHaveProperty('warnings');
+    expect(await action(['--code', '--include-linked-code'])).not.toMatch(/Warning|Note|Hint/);
+    open.mockRestore();
   });
   it('shows exact timeout/completeness warnings even with no occurrences', async () => {
     mocks.exact.mockResolvedValue({ results: [], truncated: true, timedOut: true, bytesUsed: 0 });
