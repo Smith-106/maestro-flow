@@ -62,14 +62,18 @@ JSON retains `query`, `count`, `results`, and actionable hints/warnings. Each re
 `source`, `id`, `kind`, `name`, one useful `preview` when available, code/file coordinates,
 and meaningful linked workspace/repository boundaries. Template results remain explicitly
 `referenceOnly`; low/contested confidence, non-active lifecycle warnings and explicit repository
-applicability are retained. Scores, duplicate excerpts, current/active/null metadata, topology
-and breakdown counts are omitted. Human names/previews are single-line and terminal controls
+applicability are retained. Templates also keep one `openCommand` load route, and linked human
+rows show their stable origin fence. Scores, duplicate excerpts, current/active/null metadata,
+topology and breakdown counts are omitted. Human names/previews are single-line and terminal controls
 are removed; raw machine JSON values are not terminal-sanitized.
 
 Use `--full` for the previous text formatting or `--full --json` for the original JSON fields
 and structure. This is a CLI-only projection: internal provider APIs, result ordering, scores,
 authorization and applicability do not change. Partial linked-code failures are bounded warnings,
-even alongside successful results. `--diagnostics` remains an independent bounded opt-in:
+even alongside successful results. Successful linked results no longer hide local index
+unavailability: local not-initialized/empty/error states still produce actionable hints;
+`--full --json` additionally exposes `localStatus`. KG category/lifecycle eligibility is applied
+before candidate limits. `--diagnostics` remains an independent bounded opt-in:
 JSON includes `diagnostics`; human mode writes diagnostics to stderr. It does not relax daemon
 filter acceptance. Ordinary BM25 fallback is quiet; explicit `--semantic` may warn when a
 resident daemon is unreachable.
@@ -91,7 +95,9 @@ maestro search "DetailedTopologySVG" --code
 maestro search "elk layout" --type knowhow
 ```
 
-**CamelCase identifiers** are auto-split: searching `DetailedTopologySVG` matches `detailed`, `topology`, `svg`, and the full identifier.
+**CamelCase identifiers** are auto-split: searching `DetailedTopologySVG` matches `detailed`, `topology`, `svg`, and the full identifier. CJK-adjacent `用户AuthToken` and digit-boundary `HTTP2Server` also retain their components and joined forms.
+
+**Short queries:** a single Han character such as `锁` matches title/tag substrings such as `读写锁`, without expanding body-character postings. A single ASCII letter such as `R` matches exact whole titles or individual tags only. Longer Chinese queries retain n-grams. Punctuation-bound single-digit versions such as `HTTP/2` and `HTTP/3` retain composite terms to favor the requested version; bare prose digits are not enabled as broad matches.
 
 **IDF adaptive weighting**: With more than 3 words, the system automatically weights high-specificity words (like symbol names) up and common words down.
 

@@ -76,12 +76,15 @@ JSON 保留 `query`、`count`、`results` 及可操作的提示/警告。结果�
 `source`、`id`、`kind`、`name`，以及可用时的一段有效 `preview`、文件坐标和
 有意义的 linked workspace/repository 边界。模板仍显式标记 `referenceOnly`；
 低/争议置信度、非正常生命周期状态和显式 repository applicability 保留。
+模板额外保留一个 `openCommand` 加载入口；linked 文本显示稳定来源边界。
 分数、重复摘要、current/active/null 元数据、拓扑和分项计数不再默认输出。
 人类文本中的名称/摘录压为单行并移除终端控制序列；机器 JSON 值不做终端清洗。
 
 `--full` 恢复原有文本格式，`--full --json` 恢复原 JSON 字段和结构。
 该投影仅发生在 CLI 展示层，不改变内部 provider API、顺序、分数、授权或适用性。
 部分 linked code 源失败时，即便已有正常结果也输出有界警告。
+linked 结果成功不会再掩盖本地索引故障；本地未初始化、空索引或错误仍给出修复提示，
+`--full --json` 另含本地 provider 的 `localStatus`。KG 的分类与生命周期过滤在候选限额前执行。
 `--diagnostics` 仍为独立的有界 opt-in：JSON 增加 `diagnostics`，文本模式写入 stderr；
 它不会放宽 daemon 的过滤契约。普通 BM25 回退保持安静；显式 `--semantic`
 在 resident daemon 不可达时可提示语义回退。
@@ -103,7 +106,9 @@ maestro search "DetailedTopologySVG" --code
 maestro search "elk layout" --type knowhow
 ```
 
-**CamelCase 标识符**自动拆分：搜索 `DetailedTopologySVG` 会同时匹配 `detailed`、`topology`、`svg` 和完整标识符。
+**CamelCase 标识符**自动拆分：搜索 `DetailedTopologySVG` 会同时匹配 `detailed`、`topology`、`svg` 和完整标识符。中文相邻的 `用户AuthToken` 和含数字边界的 `HTTP2Server` 同样保留组件与完整标识符。
+
+**短查询**：中文单字（如 `锁`）可命中标题/标签中的 `读写锁`，不扩展到正文单字；单字母（如 `R`）仅匹配完整标题或独立标签。多字中文继续使用 n-gram。`HTTP/2`、`HTTP/3` 等直接由标点连接的单数字版本保留复合词，以提升所请求版本的相关性；普通裸数字不因此参与泛匹配。
 
 **IDF 自适应加权**：超过 3 个词时，系统自动为高特异性词（如符号名）加权、为通用词降权。
 
