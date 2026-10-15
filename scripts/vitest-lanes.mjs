@@ -10,6 +10,7 @@ export const VITEST_INCLUDE = ['src/**/*.test.ts', 'scripts/**/*.test.mjs'];
 /** Files that use Node's test runner and therefore are not Vitest lanes. */
 export const NODE_TEST_FILES = [
   'scripts/__tests__/check-search-ranking-release-machine.test.mjs',
+  'scripts/__tests__/onnx-transformers-cpu.test.mjs',
   'scripts/__tests__/run-lifecycle-fs-native-dispatch.test.mjs',
   'scripts/__tests__/session-run-lint.test.mjs',
   'scripts/__tests__/team-swarm-resume-prompt.test.mjs',
@@ -81,7 +82,7 @@ export function discoverVitestFiles(root) {
 
 /**
  * Verify that the explicit heavy lane and the ordinary lane partition all
- * root Vitest files, while retaining the five Node test files outside Vitest.
+ * root Vitest files, while retaining the Node test files outside Vitest.
  */
 export function assertVitestLaneParity(root) {
   const discovered = discoverVitestFiles(root);

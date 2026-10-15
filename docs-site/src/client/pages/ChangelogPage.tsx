@@ -17,6 +17,15 @@ interface ChangelogEntry {
 
 const changelog: ChangelogEntry[] = [
   {
+    version: '0.5.92',
+    date: '2026-10',
+    changes: [
+      { type: 'fix', text_en: 'Improve lexical and bounded CJK recall, query/family identity and version relevance; apply KG eligibility before limits and retain local coverage alongside linked results', text_zh: '改进词法与有界 CJK 召回、查询及家族身份、版本相关性；KG 在候选限额前过滤资格，并在跨库结果中保留本地覆盖' },
+      { type: 'fix', text_en: 'Make search results compact, actionable and safe, with improved selection and documented query/provider contracts', text_zh: '搜索结果更紧凑、可操作且安全，改进选择行为，并完善查询与 provider 契约文档' },
+      { type: 'chore', text_en: 'Upgrade MCP SDK to 1.32.1 and native ONNX runtime to 1.30.0; add offline real CPU inference and vendored Transformers compatibility tests', text_zh: '升级 MCP SDK 至 1.32.1、原生 ONNX runtime 至 1.30.0；新增离线真实 CPU 推理与 vendored Transformers 兼容性测试' },
+    ],
+  },
+  {
     version: '0.5.90',
     date: '2026-10',
     changes: [
