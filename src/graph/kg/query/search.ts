@@ -2,7 +2,7 @@
 // 参考: plan-maestrograph.md Gap 修补 6 — 搜索策略链: FTS5 → LIKE → Fuzzy
 
 import type { KgQueryBuilder } from '../db/queries.js';
-import type { UnifiedNode, UnifiedSearchResult, SourceType } from '../db/types.js';
+import type { UnifiedNode, UnifiedSearchResult, SourceType, NodeSearchFilters } from '../db/types.js';
 import type { VectorSearchResult } from '../embedding/code-embedding.js';
 import { sanitizeFtsQuery } from '../db/queries.js';
 import {
@@ -19,7 +19,7 @@ import {
 // 搜索选项
 // ---------------------------------------------------------------------------
 
-export interface SearchOptions {
+export interface SearchOptions extends NodeSearchFilters {
   /** 限定来源类型 */
   sourceTypes?: SourceType[];
   /** 限定节点类型 */
@@ -99,11 +99,12 @@ export function searchUnified(
   };
 
   // 代码 FTS5 搜索 — 双策略: 原始查询 + camelCase 分词
-  if (includeCode) {
+  if (includeCode && (!options?.sourceTypes || options.sourceTypes.includes('codegraph'))) {
     const codeKinds = options?.kinds as string[] | undefined;
 
     // 策略 1: 原始查询（精确匹配 camelCase 符号名）
     const exactResults = queries.searchCodeFTS(query, {
+      ...options,
       limit: limit * 2,
       kinds: codeKinds,
       languages: options?.languages,
@@ -113,6 +114,7 @@ export function searchUnified(
     // 策略 2: 分词后查询（覆盖多词搜索场景）
     if (effectiveQuery !== query) {
       const tokenResults = queries.searchCodeFTS(effectiveQuery, {
+        ...options,
         limit: limit * 2,
         kinds: codeKinds,
         languages: options?.languages,
@@ -124,6 +126,7 @@ export function searchUnified(
     const expandedQuery = expandCodeQuery(effectiveQuery);
     if (expandedQuery !== effectiveQuery && expandedQuery !== query) {
       const expandedResults = queries.searchCodeFTS(expandedQuery, {
+        ...options,
         limit: limit * 2,
         kinds: codeKinds,
         languages: options?.languages,
@@ -142,6 +145,7 @@ export function searchUnified(
       if (stemTerms.size > 0) {
         const stemQuery = [...stemTerms].join(' ');
         const stemResults = queries.searchCodeFTS(stemQuery, {
+          ...options,
           limit: limit,
           kinds: codeKinds,
           languages: options?.languages,
@@ -154,14 +158,10 @@ export function searchUnified(
   // 知识 FTS5 搜索
   if (includeKnowledge) {
     const knowledgeResults = queries.searchKnowledgeFTS(effectiveQuery, {
+      ...options,
       limit: limit * 2,
-      sourceTypes: options?.sourceTypes,
     });
-
-    const kindFilter = options?.kinds;
-    addCandidates(knowledgeResults.filter(node => (
-      !kindFilter || kindFilter.length === 0 || kindFilter.includes(node.kind)
-    )));
+    addCandidates(knowledgeResults);
   }
 
   // 所有来源共享同一去重、评分和稳定排序路径。
@@ -203,11 +203,10 @@ export function searchUnified(
 export function searchCodeOnly(
   queries: KgQueryBuilder,
   query: string,
-  options?: { kinds?: string[]; languages?: string[]; limit?: number },
+  options?: NodeSearchFilters & { limit?: number },
 ): UnifiedNode[] {
   return queries.searchCodeFTS(query, {
-    kinds: options?.kinds,
-    languages: options?.languages,
+    ...options,
     limit: options?.limit ?? 20,
   });
 }
@@ -215,10 +214,10 @@ export function searchCodeOnly(
 export function searchKnowledgeOnly(
   queries: KgQueryBuilder,
   query: string,
-  options?: { sourceTypes?: SourceType[]; limit?: number },
+  options?: NodeSearchFilters & { limit?: number },
 ): UnifiedNode[] {
   return queries.searchKnowledgeFTS(query, {
-    sourceTypes: options?.sourceTypes,
+    ...options,
     limit: options?.limit ?? 20,
   });
 }

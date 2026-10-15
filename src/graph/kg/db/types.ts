@@ -3,6 +3,17 @@
 
 import type { StructuralReference } from '../resolution/structural-reference.js';
 
+/** Request eligibility applied before lexical/vector candidate limits.
+ * Omitted lifecycle filtering preserves the graph API's historical behavior.
+ */
+export interface NodeSearchFilters {
+  sourceTypes?: SourceType[];
+  kinds?: string[];
+  languages?: string[];
+  category?: string;
+  includeDeprecated?: boolean;
+}
+
 // ---------------------------------------------------------------------------
 // NodeKind — 完整复用 CodeGraph 22 种 + 新增 7 种知识类型
 // ---------------------------------------------------------------------------

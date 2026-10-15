@@ -6,7 +6,7 @@ import type { KgDatabaseConnection } from './connection.js';
 import type {
   UnifiedNode, UnifiedEdge, FileRecord,
   UnifiedNodeKind, UnifiedEdgeKind, Language,
-  SourceType, EdgeProvenance, UnifiedGraphStats, Visibility,
+  SourceType, EdgeProvenance, UnifiedGraphStats, Visibility, NodeSearchFilters,
 } from './types.js';
 import { tokenize as camelTokenize } from '../resolution/name-matcher.js';
 import {
@@ -147,6 +147,34 @@ function isFtsCorruption(err: unknown): boolean {
 function clampQueryLimit(value: number | undefined, fallback: number, max: number): number {
   const candidate = Number.isFinite(value) ? Math.trunc(value as number) : fallback;
   return Math.max(1, Math.min(candidate, max));
+}
+
+/** Column names/alias are internal constants; all request values are bound. */
+function searchEligibilitySql(filters: NodeSearchFilters, alias = ''): { sql: string; params: string[] } {
+  const clauses: string[] = [];
+  const params: string[] = [];
+  for (const [column, values] of [
+    ['source_type', filters.sourceTypes], ['kind', filters.kinds], ['language', filters.languages],
+  ] as const) {
+    if (values === undefined) continue;
+    // An explicit empty source set grants no sources. Empty kind/language
+    // selectors retain their historical meaning (no restriction).
+    if (values.length === 0) {
+      if (column === 'source_type') clauses.push('0 = 1');
+      continue;
+    }
+    clauses.push(`${alias}${column} IN (${values.map(() => '?').join(',')})`);
+    params.push(...values);
+  }
+  if (filters.category !== undefined) {
+    clauses.push(`${alias}category = ?`);
+    params.push(filters.category);
+  }
+  if (filters.includeDeprecated === false) {
+    clauses.push(`COALESCE(${alias}status, '') != ?`);
+    params.push('deprecated');
+  }
+  return { sql: clauses.map(clause => ` AND ${clause}`).join(''), params };
 }
 
 function rowToNode(row: NodeRow): UnifiedNode {
@@ -1125,7 +1153,7 @@ export class KgQueryBuilder {
 
   // ── Search — FTS5 统一搜索 (D1.5: 输入消毒) ───────────────────────
 
-  searchCodeFTS(query: string, opts: { limit?: number; kinds?: string[]; languages?: string[]; pathFilters?: string[] }): Array<UnifiedNode & CandidateScoreMetadata> {
+  searchCodeFTS(query: string, opts: NodeSearchFilters & { limit?: number; pathFilters?: string[] }): Array<UnifiedNode & CandidateScoreMetadata> {
     if (hasCjkChars(query)) {
       return this.searchNodesLike(query, opts);
     }
@@ -1146,7 +1174,7 @@ export class KgQueryBuilder {
     return this.searchNodesLike(query, opts);
   }
 
-  private runCodeFtsQuery(matchExpr: string, opts: { limit?: number; kinds?: string[]; languages?: string[] }): Array<UnifiedNode & CandidateScoreMetadata> {
+  private runCodeFtsQuery(matchExpr: string, opts: NodeSearchFilters & { limit?: number }): Array<UnifiedNode & CandidateScoreMetadata> {
     try {
       let sql = `
         SELECT n.*, bm25(code_fts, 0, 20, 5, 1, 2, 10) AS score
@@ -1154,14 +1182,9 @@ export class KgQueryBuilder {
         WHERE code_fts MATCH ? AND n.source_type = 'codegraph'
       `;
       const params: (string | number | null)[] = [matchExpr];
-      if (opts.kinds && opts.kinds.length > 0) {
-        sql += ` AND n.kind IN (${opts.kinds.map(() => '?').join(',')})`;
-        params.push(...opts.kinds);
-      }
-      if (opts.languages && opts.languages.length > 0) {
-        sql += ` AND n.language IN (${opts.languages.map(() => '?').join(',')})`;
-        params.push(...opts.languages);
-      }
+      const eligibility = searchEligibilitySql(opts, 'n.');
+      sql += eligibility.sql;
+      params.push(...eligibility.params);
       sql += ` ORDER BY score LIMIT ?`;
       params.push(clampQueryLimit(opts.limit, 20, 500));
 
@@ -1210,7 +1233,7 @@ export class KgQueryBuilder {
     }
   }
 
-  searchKnowledgeFTS(query: string, opts: { limit?: number; sourceTypes?: SourceType[] }): Array<UnifiedNode & CandidateScoreMetadata> {
+  searchKnowledgeFTS(query: string, opts: NodeSearchFilters & { limit?: number }): Array<UnifiedNode & CandidateScoreMetadata> {
     const isCjkShort = /^[㐀-䶿一-鿿぀-ヿ가-힯]{1,2}$/.test(query.trim());
     if (isCjkShort) {
       return this.searchKnowledgeLike(query, opts);
@@ -1236,7 +1259,7 @@ export class KgQueryBuilder {
     return this.searchKnowledgeLike(query, opts);
   }
 
-  private runKnowledgeFtsQuery(matchExpr: string, opts: { limit?: number; sourceTypes?: SourceType[] }): Array<UnifiedNode & CandidateScoreMetadata> {
+  private runKnowledgeFtsQuery(matchExpr: string, opts: NodeSearchFilters & { limit?: number }): Array<UnifiedNode & CandidateScoreMetadata> {
     try {
       let sql = `
         SELECT n.*, bm25(knowledge_fts, 0, 20, 10, 1, 15, 10) AS score
@@ -1244,11 +1267,9 @@ export class KgQueryBuilder {
         WHERE knowledge_fts MATCH ? AND n.source_type != 'codegraph'
       `;
       const params: (string | number | null)[] = [matchExpr];
-      const sourceTypes = opts.sourceTypes?.slice(0, 6);
-      if (sourceTypes && sourceTypes.length > 0) {
-        sql += ` AND n.source_type IN (${sourceTypes.map(() => '?').join(',')})`;
-        params.push(...sourceTypes);
-      }
+      const eligibility = searchEligibilitySql(opts, 'n.');
+      sql += eligibility.sql;
+      params.push(...eligibility.params);
       sql += ` ORDER BY score LIMIT ?`;
       params.push(clampQueryLimit(opts.limit, 20, 500));
 
@@ -1297,13 +1318,26 @@ export class KgQueryBuilder {
     }
   }
 
-  searchUnified(query: string, opts: { limit?: number; sourceTypes?: SourceType[] }): UnifiedNode[] {
-    const codeResults = this.searchCodeFTS(query, { limit: opts.limit ?? 10 });
-    const knowledgeResults = this.searchKnowledgeFTS(query, { limit: opts.limit ?? 10, sourceTypes: opts.sourceTypes });
+  /** Filter persisted vector identities in bounded SQL batches before top-K. */
+  filterSearchNodeIds(nodeIds: readonly string[], filters: NodeSearchFilters): Set<string> {
+    const eligible = new Set<string>();
+    const eligibility = searchEligibilitySql(filters);
+    for (let start = 0; start < nodeIds.length; start += 500) {
+      const ids = nodeIds.slice(start, start + 500);
+      const rows = this.db.prepare(`SELECT id FROM nodes WHERE id IN (${ids.map(() => '?').join(',')})${eligibility.sql}`)
+        .all(...ids, ...eligibility.params) as Array<{ id: string }>;
+      for (const row of rows) eligible.add(row.id);
+    }
+    return eligible;
+  }
+
+  searchUnified(query: string, opts: NodeSearchFilters & { limit?: number }): UnifiedNode[] {
+    const codeResults = this.searchCodeFTS(query, { ...opts, limit: opts.limit ?? 10 });
+    const knowledgeResults = this.searchKnowledgeFTS(query, { ...opts, limit: opts.limit ?? 10 });
     return [...codeResults, ...knowledgeResults];
   }
 
-  private searchNodesLike(query: string, opts: { limit?: number; kinds?: string[]; languages?: string[] }): Array<UnifiedNode & CandidateScoreMetadata> {
+  private searchNodesLike(query: string, opts: NodeSearchFilters & { limit?: number }): Array<UnifiedNode & CandidateScoreMetadata> {
     const words = query.split(/\s+/).filter(w => w.length > 0);
     const FIELDS = ['name', 'qualified_name', 'docstring', 'signature'] as const;
 
@@ -1327,14 +1361,9 @@ export class KgQueryBuilder {
     }
 
     let sql = `SELECT * FROM nodes WHERE source_type = 'codegraph' AND ${whereClause}`;
-    if (opts.kinds && opts.kinds.length > 0) {
-      sql += ` AND kind IN (${opts.kinds.map(() => '?').join(',')})`;
-      params.push(...opts.kinds);
-    }
-    if (opts.languages && opts.languages.length > 0) {
-      sql += ` AND language IN (${opts.languages.map(() => '?').join(',')})`;
-      params.push(...opts.languages);
-    }
+    const eligibility = searchEligibilitySql(opts);
+    sql += eligibility.sql;
+    params.push(...eligibility.params);
     // LIKE has no bm25 — fetch a wider candidate pool, then rank by the
     // multi-signal relevance score (name match > path > kind) — G-C5.
     const requested = clampQueryLimit(opts.limit, 20, 500);
@@ -1351,7 +1380,7 @@ export class KgQueryBuilder {
     return scored.slice(0, requested);
   }
 
-  private searchKnowledgeLike(query: string, opts: { limit?: number; sourceTypes?: SourceType[] }): Array<UnifiedNode & CandidateScoreMetadata> {
+  private searchKnowledgeLike(query: string, opts: NodeSearchFilters & { limit?: number }): Array<UnifiedNode & CandidateScoreMetadata> {
     const words = query.split(/\s+/).filter(w => w.length > 0);
     const FIELDS = ['name', 'definition', 'aliases', 'keywords', 'body'] as const;
 
@@ -1374,11 +1403,9 @@ export class KgQueryBuilder {
     }
 
     let sql = `SELECT * FROM nodes WHERE source_type != 'codegraph' AND ${whereClause}`;
-    const sourceTypes = opts.sourceTypes?.slice(0, 6);
-    if (sourceTypes && sourceTypes.length > 0) {
-      sql += ` AND source_type IN (${sourceTypes.map(() => '?').join(',')})`;
-      params.push(...sourceTypes);
-    }
+    const eligibility = searchEligibilitySql(opts);
+    sql += eligibility.sql;
+    params.push(...eligibility.params);
     const requested = clampQueryLimit(opts.limit, 20, 500);
     sql += ` ORDER BY name LIMIT ?`;
     params.push(Math.min(requested * 3, 500));

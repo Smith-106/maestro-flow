@@ -10,7 +10,7 @@ import {
   getKgDatabasePath,
   applyMigrations,
 } from './db/index.js';
-import type { UnifiedNode, UnifiedEdge, UnifiedGraphStats, UnifiedSearchResult, SyncResult, ResolutionResult, ExtractionResult, SourceType } from './db/types.js';
+import type { UnifiedNode, UnifiedEdge, UnifiedGraphStats, UnifiedSearchResult, SyncResult, ResolutionResult, ExtractionResult, SourceType, NodeSearchFilters } from './db/types.js';
 import { resolveKnowledgeEdges as resolveKnowledgeEdgesImpl } from './resolution/knowledge-resolver.js';
 import type { KnowledgeResolutionResult } from './resolution/knowledge-resolver.js';
 import { resolveCodeStructuralReferences as resolveCodeStructuralReferencesImpl } from './resolution/code-reference-resolver.js';
@@ -41,7 +41,7 @@ import type {
   PathStep,
 } from './query/traversal.js';
 import { searchUnified as searchUnifiedImpl, mergeCodeSearchResults } from './query/search.js';
-import type { UnifiedSearchOutput } from './query/search.js';
+import type { UnifiedSearchOutput, SearchOptions } from './query/search.js';
 import type { CodeEmbeddingIndex } from './embedding/code-embedding.js';
 import { buildCodeEmbeddingIndex, saveCodeEmbeddingIndex } from './embedding/index.js';
 import { buildContext as buildContextImpl } from './query/context-builder.js';
@@ -284,36 +284,26 @@ export class MaestroGraph {
 
   // ── Query ─────────────────────────────────────────────────────────
 
-  searchUnified(query: string, options?: {
-    sourceTypes?: SourceType[];
-    kinds?: string[];
-    limit?: number;
-    includeCode?: boolean;
-    includeKnowledge?: boolean;
-  }): UnifiedSearchOutput {
+  searchUnified(query: string, options?: SearchOptions): UnifiedSearchOutput {
     if (!this.queries) throw new Error('MaestroGraph not open');
     return searchUnifiedImpl(this.queries, query, {
-      sourceTypes: options?.sourceTypes,
-      kinds: options?.kinds,
+      ...options,
       limit: options?.limit ?? 20,
-      includeCode: options?.includeCode,
-      includeKnowledge: options?.includeKnowledge,
     });
   }
 
-  searchCode(query: string, options?: { kinds?: string[]; languages?: string[]; limit?: number }): UnifiedNode[] {
+  searchCode(query: string, options?: NodeSearchFilters & { limit?: number }): UnifiedNode[] {
     if (!this.queries) throw new Error('MaestroGraph not open');
     return this.queries.searchCodeFTS(query, {
-      kinds: options?.kinds,
-      languages: options?.languages,
+      ...options,
       limit: options?.limit ?? 20,
     });
   }
 
-  searchKnowledge(query: string, options?: { sourceTypes?: SourceType[]; limit?: number }): UnifiedNode[] {
+  searchKnowledge(query: string, options?: NodeSearchFilters & { limit?: number }): UnifiedNode[] {
     if (!this.queries) throw new Error('MaestroGraph not open');
     return this.queries.searchKnowledgeFTS(query, {
-      sourceTypes: options?.sourceTypes,
+      ...options,
       limit: options?.limit ?? 20,
     });
   }
@@ -367,16 +357,16 @@ export class MaestroGraph {
     }
   }
 
-  async searchHybrid(query: string, options?: { limit?: number; sourceTypes?: SourceType[] }): Promise<UnifiedSearchResult[]> {
+  async searchHybrid(query: string, options?: NodeSearchFilters & { limit?: number }): Promise<UnifiedSearchResult[]> {
     if (!this.queries) throw new Error('MaestroGraph not open');
 
-    const limit = options?.limit ?? 20;
+    const limit = Math.max(1, Math.min(Math.trunc(options?.limit ?? 20), 500));
 
-    const vecPromise = this._getVectorResults(query, limit * 2);
+    const vecPromise = this._getVectorResults(query, Math.min(limit * 2, 500), options);
 
     const ftsOutput = searchUnifiedImpl(this.queries, query, {
-      limit: limit * 2,
-      sourceTypes: options?.sourceTypes,
+      ...options,
+      limit: Math.min(limit * 2, 500),
     });
 
     const vecResults = await vecPromise;
@@ -388,7 +378,8 @@ export class MaestroGraph {
     return mergeCodeSearchResults(ftsOutput.directMatches, vecResults, this.queries, limit);
   }
 
-  private async _getVectorResults(query: string, limit: number) {
+  private async _getVectorResults(query: string, limit: number, filters?: NodeSearchFilters) {
+    if (filters?.sourceTypes && !filters.sourceTypes.includes('codegraph')) return null;
     const embIdx = await this.getCodeEmbeddingIndex();
     if (!embIdx || embIdx.nodeIds.length === 0) return null;
 
@@ -397,7 +388,14 @@ export class MaestroGraph {
     if (!queryVec) return null;
 
     const { searchCodeVectors } = await import('./embedding/index.js');
-    return searchCodeVectors(queryVec, embIdx, limit);
+    const hasEligibilityFilter = filters && (
+      filters.sourceTypes !== undefined || filters.kinds?.length || filters.languages?.length
+      || filters.category !== undefined || filters.includeDeprecated === false
+    );
+    const eligibleIds = hasEligibilityFilter
+      ? this.queries!.filterSearchNodeIds(embIdx.nodeIds, filters)
+      : undefined;
+    return searchCodeVectors(queryVec, embIdx, limit, eligibleIds);
   }
 
   getNode(id: string): UnifiedNode | null {

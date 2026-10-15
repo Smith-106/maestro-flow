@@ -1142,6 +1142,8 @@ export async function runKgSearch(
         const output = mg.searchUnified(q, {
           limit: passLimit,
           sourceTypes,
+          category: options.category,
+          includeDeprecated: options.includeDeprecated === true,
           includeCode,
           includeKnowledge,
         });
@@ -1190,7 +1192,6 @@ export async function runKgSearch(
           pass = queryKg(nextBudget);
         }
       }
-      const candidates = pass.candidates;
       const results = pass.results;
       diagnostics?.setEligibleCandidateCount?.(results.length);
       if (recordImpressions && results.length > 0) {

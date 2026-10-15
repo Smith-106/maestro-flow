@@ -266,6 +266,7 @@ export function searchCodeVectors(
   queryVec: Float32Array,
   index: CodeEmbeddingIndex,
   limit: number,
+  eligibleIds?: ReadonlySet<string>,
 ): VectorSearchResult[] {
   if (queryVec.length !== index.dimension) return [];
   const n = index.nodeIds.length;
@@ -276,6 +277,7 @@ export function searchCodeVectors(
     const dim = index.dimension;
     const flat = index.flatMatrixBuffer;
     for (let i = 0; i < n; i++) {
+      if (eligibleIds && !eligibleIds.has(index.nodeIds[i])) continue;
       const off = i * dim;
       let dot = 0;
       for (let j = 0; j < dim; j++) dot += q[j] * flat[off + j];
@@ -284,11 +286,13 @@ export function searchCodeVectors(
   } else if (index.normalized) {
     const q = normalizeVector(queryVec);
     for (let i = 0; i < n; i++) {
+      if (eligibleIds && !eligibleIds.has(index.nodeIds[i])) continue;
       const sim = dotProduct(q, index.vectors[i]);
       if (sim > 0) scored.push({ nodeId: index.nodeIds[i], score: sim });
     }
   } else {
     for (let i = 0; i < n; i++) {
+      if (eligibleIds && !eligibleIds.has(index.nodeIds[i])) continue;
       const sim = cosineSimilarity(queryVec, index.vectors[i]);
       if (sim > 0) scored.push({ nodeId: index.nodeIds[i], score: sim });
     }
