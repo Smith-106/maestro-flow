@@ -8,6 +8,7 @@ interface PresentationResult {
   source?: string;
   sourceType?: string;
   detail?: string;
+  openCommand?: string;
   filePath?: string;
   line?: number | null;
   signature?: string;
@@ -32,6 +33,8 @@ export interface CompactResult {
   kind: string;
   name: string;
   preview?: string;
+  /** The single load route for reference-only architecture templates. */
+  openCommand?: string;
   filePath?: string;
   line?: number;
   workspace?: string;
@@ -82,6 +85,9 @@ function compactResult(result: PresentationResult): CompactResult {
   };
   const preview = excerpt(result);
   if (preview) compact.preview = preview;
+  if (compact.source === 'arch-kb' && result.kind === 'template' && result.openCommand) {
+    compact.openCommand = result.openCommand;
+  }
   let filePath = result.filePath;
   let line = result.line;
   // Mixed code stores its coordinates in detail; do not change MergedResult.
@@ -122,12 +128,15 @@ export function compactSearchPayload(payload: SearchPayloadInput): CompactSearch
   return compact;
 }
 
-/** Untrusted content must never become terminal instructions. JSON stays raw. */
-export function safeSearchText(value: string): string {
+/** Strip untrusted terminal/bidi controls without changing legacy spacing. JSON stays raw. */
+export function safeSearchLine(value: string): string {
   return stripVTControlCharacters(value)
-    .replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
+    .replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, ' ');
+}
+
+/** Compact text additionally folds whitespace; never apply to an assembled legacy row. */
+export function safeSearchText(value: string): string {
+  return safeSearchLine(value).replace(/\s+/g, ' ').trim();
 }
 function shortText(value: string, max: number): string {
   const safe = safeSearchText(value);
@@ -145,15 +154,17 @@ export function renderCompactSearch(payload: CompactSearchPayload): string[] {
     const location = result.filePath
       ? `  ${safeSearchText(result.filePath)}${result.line ? `:${result.line}` : ''}` : '';
     const boundary = result.workspace ?? result.alias;
+    const fence = result.workspaceFence ?? (result.repoId ? `repo:${result.repoId}` : undefined);
     const tags = [
       result.referenceOnly ? 'reference only; not current project' : '',
       result.confidence ? `${result.confidence} confidence` : '',
       result.status ?? '',
-      boundary ? `@${boundary}` : '',
+      boundary ? `@${boundary}${fence ? `; ${fence}` : ''}` : '',
       result.appliesToRepoIds ? `applies to: ${result.appliesToRepoIds.join(', ')}` : '',
     ].filter(Boolean).map(tag => ` [${safeSearchText(tag)}]`).join('');
     lines.push(`  [${safeSearchText(result.source)}:${safeSearchText(result.kind)}] ${identity}${name !== identity ? `  ${name}` : ''}${location}${tags}`);
     if (result.preview) lines.push(`    ${shortText(result.preview, 200)}`);
+    if (result.openCommand) lines.push(`    ${safeSearchText(result.openCommand)}`);
   }
   return lines;
 }

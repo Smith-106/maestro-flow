@@ -46,10 +46,10 @@ beforeEach(() => {
   error = vi.spyOn(console, 'error').mockImplementation(() => {});
 });
 afterEach(() => { process.chdir(cwd); rmSync(root, { recursive: true, force: true }); vi.restoreAllMocks(); process.exitCode = 0; });
-async function action(args: string[]) {
+async function action(args: string[], query = 'query') {
   log.mockClear(); error.mockClear();
   const program = new Command(); registerSearchCommand(program);
-  await program.parseAsync(['search', 'query', ...args], { from: 'user' });
+  await program.parseAsync(['search', query, ...args], { from: 'user' });
   // Search schedules best-effort impression imports; settle them before the
   // next invocation or teardown can change cwd/provider mocks underneath them.
   await vi.dynamicImportSettled();
@@ -105,6 +105,88 @@ describe('compact CLI presentation', () => {
     const templates = JSON.parse(await action(['--type', 'template', '--json']));
     expect(templates.results[0]).toMatchObject({ referenceOnly: true, filePath: 'templates/alpha.md' });
   });
+  it.each([['--type', 'template'], []])('keeps one actionable compact template route (%j)', async (...args) => {
+    const compact = JSON.parse(await action([...args, '--json']));
+    const row = compact.results.find((result: { source: string }) => result.source === 'arch-kb');
+    expect(row).toMatchObject({ openCommand: 'maestro load --type template --id template-alpha' });
+    for (const field of ['detail', 'searchCommand', 'rank', 'score']) expect(row).not.toHaveProperty(field);
+    expect(compact.results.filter((result: { source: string }) => result.source !== 'arch-kb').every((result: object) => !('openCommand' in result))).toBe(true);
+    const text = await action(args);
+    expect(text.match(/maestro load --type template --id template-alpha/g)).toHaveLength(1);
+    expect(text).not.toContain('maestro arch-kb search');
+  });
+  it.each([['--code'], []])('displays stable linked fences in actual compact output (%j)', async (...args) => {
+    mocks.code.mockReturnValue([{ ...code, metadata: { fixtureWorkspace: 'library', fixtureWorkspaceFence: 'repo:stable-library' } }]);
+    expect(await action(args)).toContain('[@library; repo:stable-library]');
+    expect(JSON.parse(await action([...args, '--json'])).results.find((result: { source: string }) => result.source === 'code'))
+      .toMatchObject({ workspace: 'library', workspaceFence: 'repo:stable-library' });
+  });
+  it.each([['template', ['--type', 'template']], ['code', ['--code']], ['KG', ['--kg']], ['mixed', []], ['wiki', ['--wiki-only']]] as const)
+  ('sanitizes compact/full human %s fields and query without changing raw JSON', async (_label, args) => {
+    const attack = '\u001b]8;;https://evil.test\u0007x\u001b]8;;\u001b\\\u001b[2J\u009b2K\r\u0000\u202e\u2066';
+    const name = `unsafe${attack}name`;
+    const badCode = { ...code, id: `code:${name}`, kind: `function${attack}`, name, filePath: `src/${name}.ts`, signature: `signature ${name}`,
+      metadata: { fixtureWorkspace: `library${attack}`, fixtureWorkspaceFence: `repo:${name}` } };
+    mocks.code.mockReturnValue([badCode]);
+    mocks.unified.mockReturnValue({ directMatches: [{ node: { ...badCode, sourceType: `codegraph${attack}`, category: 'coding', definition: `definition ${name}` }, score: 7 }] });
+    mocks.templates.mockReturnValue([{ ...template, entry: { ...template.entry, id: name, title: name, path: `templates/${name}.md`, summary: `summary ${name}` } }]);
+    mocks.daemon.mockResolvedValue({ ok: true, filtersApplied: true, results: [{ entry: { ...wiki, id: name, title: name, type: `knowhow${attack}`, category: `coding${attack}`, summary: `summary ${name}`, body: `query snippet ${name}` }, score: 5 }] });
+    for (const mode of [[], ['--full']]) {
+      const json = JSON.parse(await action([...args, ...mode, '--json'], `query${attack}`));
+      expect(json.query).toBe(`query${attack}`);
+      expect(json.results.length).toBeGreaterThan(0);
+      expect(json.results.some((result: { name: string }) => result.name === name)).toBe(true);
+      for (const result of json.results) {
+        expect(result.id).toContain(name);
+        if (result.openCommand) expect(result.openCommand).toContain(name);
+        if (result.filePath) expect(result.filePath).toContain(name);
+        if (result.workspaceFence) expect(result.workspaceFence).toContain(name);
+        if (result.detail) expect(result.detail).toContain(name);
+        expect(result.preview ?? result.signature ?? result.definition ?? result.snippet ?? result.summary).toContain(attack);
+      }
+      const text = await action([...args, ...mode], `fix query${attack}`);
+      expect(text).toContain('unsafe');
+      expect(text).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/);
+      expect(text).not.toContain('https://evil.test');
+      expect(text.split('\n').slice(1).every(line => line.startsWith('  '))).toBe(true);
+    }
+  });
+  it('preserves plain full headers, spacing, scores and template destinations', async () => {
+    expect(await action(['--code', '--full'])).toBe('Search: "query" (code 1, bm25)\n  [function] parse  C:/repo/src/parser.ts:17  function parse(input: string)  (10.0000)');
+    expect(await action(['--type', 'template', '--full'])).toBe('Search: "query" (template 1 results)\n  Hint: For exact template lookup, use: maestro arch-kb search "query" --type template\n  [arch-kb:template] [reference only; not current project]  Alpha template  templates/alpha.md  (maestro load --type template --id template-alpha)  (1.0000)\n    Reusable architecture pattern');
+    expect(await action(['--wiki-only', '--full'])).toBe('Search: "query" (knowhow 1 = 1 results, +emb(99))\n  [wiki:knowhow]  Useful rule  coding  rule-400  (1.0000)\n    L1: Preview body for query');
+    expect(await action(['--kg', '--full'])).toBe('Search: "query" (codegraph 1 = 1, KG)\n  [codegraph:function]  code:parse  parse  Parse input safely  (7.0)');
+  });
+  it('preserves full content spacing as well as renderer indentation', async () => {
+    mocks.code.mockReturnValue([{ ...code, signature: 'function parse(a:  string)' }]);
+    mocks.templates.mockReturnValue([{ ...template, entry: { ...template.entry, summary: '  Reference  detail  ' } }]);
+    expect(await action(['--code', '--full'])).toContain('  function parse(a:  string)  (10.0000)');
+    expect(await action(['--type', 'template', '--full'])).toContain('\n      Reference  detail  ');
+  });
+  it('keeps raw template command examples in machine hints', async () => {
+    mocks.templates.mockReturnValue([]);
+    const query = 'query\u001b[2J\u202e';
+    expect(JSON.parse(await action(['--type', 'template', '--json'], query)).hint)
+      .toBe(`For exact template lookup, use: maestro arch-kb search ${JSON.stringify(query)} --type template`);
+    expect(await action(['--type', 'template', '--full'], query)).not.toMatch(/[\u001b\u202e]/);
+  });
+  it.each([['--code'], ['--kg'], ['--wiki-only'], ['--type', 'template'], []])('sanitizes before trusted full TTY highlighting (%j)', async (...args) => {
+    const descriptor = Object.getOwnPropertyDescriptor(process.stdout, 'isTTY');
+    Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value: true });
+    try {
+      const name = 'query\u001b[2J\u202e';
+      mocks.code.mockReturnValue([{ ...code, name }]);
+      mocks.unified.mockReturnValue({ directMatches: [{ node: { ...code, name, sourceType: 'codegraph', definition: 'query\u001b[2J\u202e' }, score: 7 }] });
+      mocks.templates.mockReturnValue([{ ...template, entry: { ...template.entry, title: name } }]);
+      mocks.daemon.mockResolvedValue({ ok: true, filtersApplied: true, results: [{ entry: { ...wiki, title: name, body: name }, score: 5 }] });
+      const text = await action([...args, '--full']);
+      expect(text).toContain('\u001b[1;33mquery\u001b[0m');
+      expect(text.replace(/\u001b\[(?:1;33|0)m/g, '')).not.toMatch(/[\u001b\u202e]/);
+    } finally {
+      if (descriptor) Object.defineProperty(process.stdout, 'isTTY', descriptor);
+      else Reflect.deleteProperty(process.stdout, 'isTTY');
+    }
+  });
   it('keeps bounded diagnostics opt-in and independent of compact/full rendering', async () => {
     expect(JSON.parse(await action(['--code', '--json']))).not.toHaveProperty('diagnostics');
     for (const full of [[], ['--full']]) {
@@ -142,6 +224,23 @@ describe('compact CLI presentation', () => {
     expect(text).toContain('truncated');
     expect(text).toContain('timed out; incomplete');
   });
+  it('sanitizes exact human query, path, workspace and preview with intact indentation in both modes', async () => {
+    const attack = '\u001b[2J\u001b]8;;https://evil.test\u0007x\u001b]8;;\u001b\\\u009b2K\r\u202e';
+    const results = [{ filePath: `src/${attack}.ts`, line: 3, column: 5, preview: `query${attack}snippet`, workspace: `library${attack}` }];
+    mocks.exact.mockResolvedValue({ results, truncated: false, timedOut: false, bytesUsed: 100 });
+    for (const mode of [[], ['--full']]) {
+      const text = await action(['--exact', ...mode], `query${attack}`);
+      expect(text).not.toMatch(/[\u001b\u0007\u009b\r\u202e]/);
+      expect(text).not.toContain('https://evil.test');
+      expect(text.split('\n')[1]).toMatch(/^  \[exact\]  src\//);
+      expect(text.split('\n')[2]).toMatch(/^    query/);
+      expect(JSON.parse(await action(['--exact', ...mode, '--json'], `query${attack}`))).toMatchObject({ query: `query${attack}`, results });
+    }
+  });
+  it('preserves plain full exact spacing and coordinates', async () => {
+    mocks.exact.mockResolvedValue({ results: [{ filePath: 'src/x.ts', line: 3, column: 5, preview: 'query  snippet', workspace: 'linked' }], truncated: false, timedOut: false, bytesUsed: 100 });
+    expect(await action(['--exact', '--full'])).toBe('Search: "query" (exact 1 result)\n  [exact]  src/x.ts:3:5  @linked\n    query  snippet');
+  });
   it('preserves exact JSON coordinates and completeness fields in either mode', async () => {
     const results = [{ filePath: 'src/x.ts', line: 3, column: 5, preview: 'query', workspace: 'linked' }];
     mocks.exact.mockResolvedValue({ results, truncated: true, timedOut: true, bytesUsed: 100 });
@@ -170,6 +269,22 @@ describe('presentation-only projection and terminal safety', () => {
     expect(text).not.toContain('https://evil.test');
     expect(text).toContain(':4');
     expect(text.split('\n')).toHaveLength(4);
+  });
+  it('disambiguates repeated aliases with a stable fence or repo id, safely', () => {
+    const results = [
+      { source: 'wiki', id: 'one', kind: 'spec', name: 'One', alias: 'library', repoId: 'one' },
+      { source: 'wiki', id: 'two', kind: 'spec', name: 'Two', alias: 'library', repoId: 'two', workspaceFence: 'repo:two' },
+      { source: 'code', id: 'three', kind: 'function', name: 'Three', workspace: 'library', workspaceFence: 'repo:\u001b[2Jthree\u202e' },
+    ];
+    const text = renderCompactSearch(compactSearchPayload({ query: 'q', count: 3, results })).join('\n');
+    expect(text).toContain('[@library; repo:one]');
+    expect(text).toContain('[@library; repo:two]');
+    expect(text).toContain('[@library; repo:three');
+    expect(text).not.toMatch(/[\u001b\u202e]/);
+  });
+  it('does not expose non-template actions in the compact contract', () => {
+    const payload = compactSearchPayload({ query: 'q', count: 1, results: [{ source: 'wiki', id: 'one', kind: 'spec', name: 'One', openCommand: 'unwanted' }] });
+    expect(payload.results[0]).not.toHaveProperty('openCommand');
   });
   it('bounds partial linked failure warnings and excludes raw driver errors', () => {
     const warnings = linkedCodeWarnings({ linkedFailures: Array.from({ length: 8 }, (_, i) => ({ workspace: `workspace-${i}` })) });

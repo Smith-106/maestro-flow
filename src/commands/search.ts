@@ -21,7 +21,7 @@ import { truncate, extractSnippet, highlightTerms } from '../utils/cli-format.js
 import { knowhowFileToWikiId } from '../utils/frontmatter.js';
 import { isDeprecatedKnowledgeEntry } from '../utils/knowledge-lifecycle.js';
 import { recordSearchUsage } from './search-usage.js';
-import { compactSearchPayload, linkedCodeWarnings, renderCompactSearch, safeSearchText } from './search-presentation.js';
+import { compactSearchPayload, linkedCodeWarnings, renderCompactSearch, safeSearchLine, safeSearchText } from './search-presentation.js';
 import type { SourceType } from '../graph/kg/db/types.js';
 import type { WikiIndexer } from '#maestro-dashboard/wiki/wiki-indexer.js';
 import type {
@@ -1207,7 +1207,7 @@ export async function runKgSearch(
         } catch (error) {
           if (process.env.MAESTRO_DEBUG === '1') {
             console.error(
-              `[search] KG impression write failed: ${error instanceof Error ? error.message : error}`,
+              safeSearchLine(`[search] KG impression write failed: ${error instanceof Error ? error.message : error}`),
             );
           }
         }
@@ -1227,7 +1227,7 @@ export async function runKgSearch(
   } catch (e: unknown) {
     diagnostics?.recordFallback('kg', 'unavailable');
     if (process.env.MAESTRO_DEBUG === '1') {
-      console.error(`[search] KG search failed: ${e instanceof Error ? e.message : e}`);
+      console.error(safeSearchLine(`[search] KG search failed: ${e instanceof Error ? e.message : e}`));
     }
     return { results: [], summary: {} };
   } finally {
@@ -1330,7 +1330,7 @@ async function runLocalCodeSearch(
     }
   } catch (e: unknown) {
     if (process.env.MAESTRO_DEBUG === '1') {
-      console.error(`[search] code search failed: ${e instanceof Error ? e.message : e}`);
+      console.error(safeSearchLine(`[search] code search failed: ${e instanceof Error ? e.message : e}`));
     }
     return { results: [], status: 'error' };
   }
@@ -1368,7 +1368,7 @@ export async function runLinkedCodeSearch(
       const message = error instanceof Error ? error.message : String(error);
       failures.push({ workspace: workspace.name, message });
       if (process.env.MAESTRO_DEBUG === '1') {
-        console.error(`[search] linked code search failed for workspace "${workspace.name}": ${message}`);
+        console.error(safeSearchLine(`[search] linked code search failed for workspace "${workspace.name}": ${message}`));
       }
     } finally {
       graph?.close();
@@ -1753,7 +1753,7 @@ export function registerSearchCommand(program: Command): void {
         const hint = (SPEC_CATEGORIES as readonly string[]).includes(opts.type)
           ? ` Did you mean '--category ${opts.type}' (spec category, not a type)?`
           : '';
-        console.error(`Error: --type must be one of ${VALID_TYPES.join(', ')} (got "${opts.type}").${hint}`);
+        console.error(safeSearchLine(`Error: --type must be one of ${VALID_TYPES.join(', ')} (got "${opts.type}").${hint}`));
         process.exit(1);
       }
       if (opts.type === 'template' && (codeOnly || kgMode)) {
@@ -1815,7 +1815,7 @@ export function registerSearchCommand(program: Command): void {
         } catch (error: unknown) {
           // Exact failures are terminal for this opt-in route. Never fall back
           // to a broad filesystem scan or the normal indexed search providers.
-          console.error(`Error: ${error instanceof Error ? error.message : String(error)}`);
+          console.error(safeSearchLine(`Error: ${error instanceof Error ? error.message : String(error)}`));
           process.exitCode = 1;
           return;
         }
@@ -1832,7 +1832,7 @@ export function registerSearchCommand(program: Command): void {
           }, null, 2));
           return;
         }
-        const human = opts.full === true ? (text: string) => text : safeSearchText;
+        const human = opts.full === true ? safeSearchLine : safeSearchText;
         const status = `${exact.truncated ? ', truncated' : ''}${exact.timedOut ? ', timed out; incomplete' : ''}`;
         console.log(`Search: "${human(q)}" (exact ${exact.results.length} result${exact.results.length === 1 ? '' : 's'}${status})`);
         if (exact.results.length === 0) {
@@ -1840,8 +1840,8 @@ export function registerSearchCommand(program: Command): void {
           return;
         }
         for (const result of exact.results) {
-          const workspaceTag = result.workspace ? `  @${result.workspace}` : '';
-          console.log(human(`  [exact]  ${result.filePath}:${result.line}:${result.column}${workspaceTag}`));
+          const workspaceTag = result.workspace ? `  @${human(result.workspace)}` : '';
+          console.log(`  [exact]  ${human(result.filePath)}:${result.line}:${result.column}${workspaceTag}`);
           if (result.preview) console.log(`    ${human(result.preview)}`);
         }
         return;
@@ -1857,10 +1857,11 @@ export function registerSearchCommand(program: Command): void {
 
       const skipEmbedding = opts.emb === false || opts.semantic !== true;
       const isTTY = process.stdout.isTTY === true;
-      const qTerms = q.toLowerCase().split(/\s+/).filter(Boolean);
+      const humanQuery = safeSearchLine(q);
+      const qTerms = humanQuery.toLowerCase().split(/\s+/).filter(Boolean);
       const isDevelopmentQuery = /(?:\b(?:implement|implementation|develop|development|build|feature|refactor|fix|bug|api|class|function|code)\b|组件|开发|实现|功能|重构|修复|代码|接口)/i.test(q);
-      const templateSearchCommand = `maestro arch-kb search ${JSON.stringify(q)} --type template`;
-      const codeSearchCommand = `maestro search ${JSON.stringify(q)} --code`;
+      const templateSearchCommand = `maestro arch-kb search ${JSON.stringify(humanQuery)} --type template`;
+      const codeSearchCommand = `maestro search ${JSON.stringify(humanQuery)} --code`;
 
       // --type template: exact architecture-template search. This bypasses
       // project Wiki/CodeGraph providers but uses the same result contract.
@@ -1872,7 +1873,9 @@ export function registerSearchCommand(program: Command): void {
         const merged = mergeAndNormalize([], [], limit, q, templateResults);
         diagnostics?.setResultCount(merged.length);
         const templateHint = `For exact template lookup, use: ${templateSearchCommand}`;
-        if (outputCompact({ query: q, count: merged.length, results: merged, ...(merged.length === 0 ? { hint: templateHint } : {}) })) return;
+        // Keep machine hints raw; human command examples sanitize before quoting.
+        const rawHint = `For exact template lookup, use: maestro arch-kb search ${JSON.stringify(q)} --type template`;
+        if (outputCompact({ query: q, count: merged.length, results: merged, ...(merged.length === 0 ? { hint: rawHint } : {}) })) return;
         if (opts.json) {
           console.log(JSON.stringify(withDiagnostics({
             query: q,
@@ -1885,14 +1888,15 @@ export function registerSearchCommand(program: Command): void {
           }), null, 2));
           return;
         }
-        console.log(`Search: "${q}" (template ${merged.length} results)`);
+        console.log(`Search: "${humanQuery}" (template ${merged.length} results)`);
         if (merged.length === 0) {
           console.log('  No matches found.');
           console.log(`  Hint: ${templateHint}`);
           return;
         }
         console.log(`  Hint: ${templateHint}`);
-        for (const result of merged) {
+        for (const raw of merged) {
+          const result = safeHumanResult(raw);
           const name = isTTY ? highlightTerms(truncate(result.name, 60), qTerms) : truncate(result.name, 60);
           console.log(`  [arch-kb:template] [reference only; not current project]  ${name}  ${result.detail}  (${result.score.toFixed(4)})`);
           if (result.summary) console.log(`    ${result.summary}`);
@@ -1929,12 +1933,13 @@ export function registerSearchCommand(program: Command): void {
         if (summary.specRules) parts.push(`spec ${summary.specRules}`);
         if (summary.knowhowDocs) parts.push(`knowhow ${summary.knowhowDocs}`);
         const headerSummary = parts.length > 0 ? `${parts.join(' + ')} = ${kgResults.length}` : `${kgResults.length}`;
-        console.log(`Search: "${q}" (${headerSummary}, KG)`);
+        console.log(`Search: "${humanQuery}" (${headerSummary}, KG)`);
         if (kgResults.length === 0) {
           console.log('  No matches found.');
           return;
         }
-        for (const r of kgResults) {
+        for (const raw of kgResults) {
+          const r = safeHumanResult(raw);
           const name = isTTY ? highlightTerms(r.name, qTerms) : r.name;
           const def = r.definition ? `  ${truncate(r.definition, 70)}` : '';
           const scoreTag = `  (${r.score.toFixed(1)})`;
@@ -1948,7 +1953,7 @@ export function registerSearchCommand(program: Command): void {
         try {
           targetRepository = resolveRepositoryContext(opts.repo, { projectRoot: process.cwd() });
         } catch (error) {
-          console.error(`Error: ${(error as Error).message}`);
+          console.error(safeSearchLine(`Error: ${(error as Error).message}`));
           process.exitCode = 1;
           return;
         }
@@ -2019,7 +2024,7 @@ export function registerSearchCommand(program: Command): void {
           }), null, 2));
           return;
         }
-        console.log(`Search: "${q}" (code ${codeResults.length}, ${embTag})`);
+        console.log(`Search: "${humanQuery}" (code ${codeResults.length}, ${embTag})`);
         for (const warning of warnings) console.log(`  Warning: ${safeSearchText(warning)}`);
         if (codeResults.length === 0) {
           console.log('  No matches found.');
@@ -2090,7 +2095,7 @@ export function registerSearchCommand(program: Command): void {
       const countSummary = countParts.length > 0
         ? `${countParts.join(' + ')} = ${merged.length} results`
         : '0 results';
-      console.log(`Search: "${q}" (${countSummary}, ${embTag})`);
+      console.log(`Search: "${humanQuery}" (${safeSearchLine(countSummary)}, ${embTag})`);
       for (const warning of warnings) console.log(`  Warning: ${safeSearchText(warning)}`);
       if (codeHint) console.log(`  Note: ${codeHint}`);
 
@@ -2109,7 +2114,8 @@ export function registerSearchCommand(program: Command): void {
         return;
       }
 
-      for (const r of merged) {
+      for (const raw of merged) {
+        const r = safeHumanResult(raw);
         const displayName = truncate(r.name, 60);
         const name = isTTY ? highlightTerms(displayName, qTerms) : displayName;
         const scoreTag = `  (${r.score.toFixed(4)})`;
@@ -2401,7 +2407,17 @@ function pickSubtitle(r: MergedResult): string | null {
   return null;
 }
 
-function printCodeResult(r: CodeSearchResult, indent: string, isTTY: boolean, qTerms: string[]): void {
+/** Only direct string fields are displayed by legacy rows; never mutate provider/JSON data.
+ * Sanitize before truncation/highlighting so partial escapes cannot leak and trusted TTY color stays intact.
+ */
+function safeHumanResult<T extends object>(result: T): T {
+  return Object.fromEntries(Object.entries(result).map(([key, value]) =>
+    [key, typeof value === 'string' ? safeSearchLine(value) : value],
+  )) as T;
+}
+
+function printCodeResult(result: CodeSearchResult, indent: string, isTTY: boolean, qTerms: string[]): void {
+  const r = safeHumanResult(result);
   const scoreTag = r.score !== null ? `  (${r.score.toFixed(4)})` : '';
   const name = isTTY ? highlightTerms(r.name, qTerms) : r.name;
   const sigTag = r.signature ? `  ${truncate(r.signature, 60)}` : '';
