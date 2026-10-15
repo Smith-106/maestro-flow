@@ -247,6 +247,54 @@ describe('lexical recall regressions', () => {
     expect(added.reduce((sum, [, postings]) => sum + postings.length, 0)).toBeLessThanOrEqual(10);
   });
 
+  it.each([
+    ['HTTP/2', 'HTTP/3'],
+    ['HTTP/v2', 'HTTP/v3'],
+    ['TLS-1', 'TLS-2'],
+    ['API_v2', 'API_v3'],
+    ['v2', 'v3'],
+  ])('distinguishes version identifiers %s and %s in both orders and serialized indexes', (left, right) => {
+    const documents = [entry('a-left', `${left} guide`, ''), entry('z-right', `${right} guide`, '')];
+    for (const entries of [documents, [...documents].reverse()]) {
+      const cold = buildInvertedIndex(entries);
+      const warm = deserializeInvertedIndex(JSON.parse(JSON.stringify(serializeInvertedIndex(cold))))!;
+      expect(warm).not.toBeNull();
+      for (const index of [cold, warm]) {
+        for (const search of [searchBM25, searchBM25Planned]) {
+          for (const [query, expected] of [[left, 'a-left'], [right, 'z-right']]) {
+            for (const text of [query, `${query} guide`, `guide ${query}`, `(${query.toLowerCase()})`]) {
+              expect(search(index, text, 2)[0]?.docId, text).toBe(expected);
+              expect(search(index, text, 2)).toEqual(search(cold, text, 2));
+            }
+          }
+        }
+      }
+    }
+  });
+
+  it('does not create unrestricted digit/prose postings or lose stopword and punctuation guards', () => {
+    expect(tokenize('1 2 3 a I the and of')).toEqual([]);
+    expect(tokenize('HTTP 2 ordinary prose; in/2 and/3')).toEqual(['http', 'ordinary', 'prose']);
+    expect(tokenize('HTTP/2')).toContain('\u0000version:http/2');
+    expect(tokenize('HTTP/20')).not.toContain('\u0000version:http/2');
+    expect(tokenize('HTTP/2beta')).not.toContain('\u0000version:http/2');
+    expect(tokenize('xHTTP/2suffix')).not.toContain('\u0000version:http/2');
+    const index = buildInvertedIndex([
+      entry('prose', 'HTTP notes', '2 '.repeat(500)),
+      entry('version', 'HTTP/2 guide', ''),
+      entry('body-version', 'Transport reference', 'HTTP/3 guide'),
+      entry('tag-version', 'Protocol reference', '', { tags: ['HTTP/4'] }),
+    ]);
+    for (const search of [searchBM25, searchBM25Planned]) {
+      for (const query of ['2', '/', '---', '$@', 'the']) expect(search(index, query, 10)).toEqual([]);
+      expect(search(index, 'HTTP/2', 1)[0]?.docId).toBe('version');
+      expect(search(index, 'HTTP/3', 1)[0]?.docId).toBe('body-version');
+      expect(search(index, 'HTTP/4', 1)[0]?.docId).toBe('tag-version');
+    }
+    expect(index.fieldPostings.has('2')).toBe(false);
+    expect(index.fieldPostings.has('\u0000version:in/2')).toBe(false);
+  });
+
   it('gives explicit synonym originals full weight regardless of order', () => {
     const index = buildInvertedIndex([
       entry('auth', 'Auth', ''),

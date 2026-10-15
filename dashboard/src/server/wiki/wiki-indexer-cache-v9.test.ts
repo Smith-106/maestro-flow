@@ -204,7 +204,7 @@ describe('WikiIndexer search-cache compatibility and compiled postings', () => {
     expect(searchBM25Planned(await reader.getSearchIndex(), '锁', 10)).toEqual(lexicalExpected);
     await reader.close();
     if (compiled) {
-      expect(cache.compiled.tokenizerPolicy).toBe('lexical/4');
+      expect(cache.compiled.tokenizerPolicy).toBe('lexical/5');
       cache.compiled.tokenizerPolicy = 'lexical/3';
       cache.compiled.fieldPostings = cache.compiled.fieldPostings.filter(([term]: [string]) => !term.startsWith('\u0000cjk:'));
       await writeFile(join(root, 'search-cache.json'), JSON.stringify(cache));
@@ -214,6 +214,56 @@ describe('WikiIndexer search-cache compatibility and compiled postings', () => {
       expect((await stale.getSearchIndexWithMeta()).cacheState).toBe('cold-build');
       expect(await assertPublic(stale)).toEqual(expected);
       expect(searchBM25Planned(await stale.getSearchIndex(), '锁', 10)).toEqual(lexicalExpected);
+      await stale.close();
+      expect(JSON.stringify((await readCache()).entries)).toBe(canonicalEntries);
+    }
+  });
+
+  it.each([false, true])('ranks separated versions through public cold/canonical/compiled and stale-policy rebuilds (compiled=%s)', async compiled => {
+    const queries = ['HTTP/2', 'HTTP/3', 'HTTP/2 guide', 'guide HTTP/3', 'v2', 'v3'];
+    const ids = ['http-two', 'http-three', 'version-two', 'version-three'];
+    const titles = ['HTTP/2 guide', 'HTTP/3 guide', 'v2 transport', 'v3 transport'];
+    for (let i = 0; i < ids.length; i++) {
+      await writeFile(join(root, 'specs', `${ids[i]}.md`), `---\ntitle: ${titles[i]}\n---\n`);
+    }
+    const expectedTop = ['http-two', 'http-three', 'http-two', 'http-three', 'version-two', 'version-three']
+      .map(id => `spec:project:${id}`);
+    const assertPublic = async (reader: WikiIndexer) => {
+      const ranking: string[][] = [];
+      for (let i = 0; i < queries.length; i++) {
+        const result = await reader.searchWithMeta(queries[i], 10, { skipEmbedding: true });
+        expect(result.results[0]?.entry.id, queries[i]).toBe(expectedTop[i]);
+        ranking.push(result.results.map(hit => hit.entry.id));
+      }
+      return ranking;
+    };
+    const { indexer } = await publish(compiled);
+    const expected = await assertPublic(indexer);
+    const cold = await indexer.getSearchIndex();
+    const lexicalExpected = queries.map(query => searchBM25Planned(cold, query, 10));
+    await indexer.close();
+    const cache = await readCache();
+    const canonicalEntries = JSON.stringify(cache.entries);
+    const reader = new WikiIndexer({ workflowRoot: root, role: 'reader', includeCliSessions: false });
+    const subject = reader as unknown as { buildIndexCandidate: () => Promise<never> };
+    subject.buildIndexCandidate = async () => { throw new Error('canonical version entries must load'); };
+    const warm = await reader.getSearchIndexWithMeta();
+    expect(warm.cacheState).toBe(compiled ? 'cache-hit' : 'cold-build');
+    expect(await assertPublic(reader)).toEqual(expected);
+    expect(queries.map(query => searchBM25Planned(warm.index, query, 10))).toEqual(lexicalExpected);
+    await reader.close();
+    if (compiled) {
+      expect(cache.compiled.tokenizerPolicy).toBe('lexical/5');
+      cache.compiled.tokenizerPolicy = 'lexical/4';
+      cache.compiled.fieldPostings = cache.compiled.fieldPostings.filter(([term]: [string]) => !term.startsWith('\u0000version:'));
+      await writeFile(join(root, 'search-cache.json'), JSON.stringify(cache));
+      const stale = new WikiIndexer({ workflowRoot: root, role: 'reader', includeCliSessions: false });
+      const staleSubject = stale as unknown as { buildIndexCandidate: () => Promise<never> };
+      staleSubject.buildIndexCandidate = async () => { throw new Error('canonical v9 must not rebuild from sources'); };
+      const rebuilt = await stale.getSearchIndexWithMeta();
+      expect(rebuilt.cacheState).toBe('cold-build');
+      expect(await assertPublic(stale)).toEqual(expected);
+      expect(queries.map(query => searchBM25Planned(rebuilt.index, query, 10))).toEqual(lexicalExpected);
       await stale.close();
       expect(JSON.stringify((await readCache()).entries)).toBe(canonicalEntries);
     }

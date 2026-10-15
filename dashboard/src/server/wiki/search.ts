@@ -297,7 +297,7 @@ export interface InvertedIndexValidationOptions {
 }
 
 const SERIALIZED_BM25F_VERSION = 1;
-const TOKENIZER_POLICY = 'lexical/4';
+const TOKENIZER_POLICY = 'lexical/5';
 const MAX_COMPILED_TERMS = 1_000_000;
 const MAX_COMPILED_POSTINGS = 4_000_000;
 const MAX_COMPILED_DOCS = 1_000_000;
@@ -533,6 +533,10 @@ export const deserializeBM25FIndex = deserializeInvertedIndex;
 const CJK_RUN = /[一-鿿㐀-䶿]+/g;
 const HAS_CJK = /[一-鿿㐀-䶿]/;
 const CAMEL_BOUNDARY = /[a-z0-9][A-Z]|[A-Z]+[A-Z][a-z]/;
+// Preserve a single-digit version only when punctuation binds it directly to
+// an ASCII identifier (HTTP/2, API_v2). Never index a bare digit or whitespace
+// prose pair. Letter/number boundaries prevent partial HTTP/20 or /2beta hits.
+const SEPARATED_VERSION = /(?:^|[^\p{L}\p{N}])([a-z][a-z0-9]*)[/._:-](?:v)?([0-9])(?=$|[^\p{L}\p{N}])/giu;
 
 function cjkNgrams(run: string): string[] {
   const out: string[] = [];
@@ -552,6 +556,10 @@ function cjkNgrams(run: string): string[] {
 export function tokenize(text: string): string[] {
   if (!text) return [];
   const out: string[] = [];
+  for (const match of text.matchAll(SEPARATED_VERSION)) {
+    const identifier = match[1].toLowerCase();
+    if (!STOP_WORDS.has(identifier)) out.push(`\0version:${identifier}/${match[2]}`);
+  }
   // Split preserving original case so camelCase boundaries are detectable
   const rawParts = text.split(/[^\p{L}\p{N}]+/u);
   for (const raw of rawParts) {
