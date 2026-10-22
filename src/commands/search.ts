@@ -21,7 +21,7 @@ import { truncate, extractSnippet, highlightTerms } from '../utils/cli-format.js
 import { knowhowFileToWikiId } from '../utils/frontmatter.js';
 import { isDeprecatedKnowledgeEntry } from '../utils/knowledge-lifecycle.js';
 import { recordSearchUsage } from './search-usage.js';
-import { compactSearchPayload, linkedCodeWarnings, renderCompactSearch, safeSearchLine, safeSearchText } from './search-presentation.js';
+import { compactSearchPayload, knowledgeCaptureHint, linkedCodeWarnings, renderCompactSearch, safeSearchLine, safeSearchText } from './search-presentation.js';
 import type { SourceType } from '../graph/kg/db/types.js';
 import type { WikiIndexer } from '#maestro-dashboard/wiki/wiki-indexer.js';
 import type {
@@ -1927,10 +1927,15 @@ export function registerSearchCommand(program: Command): void {
         );
         diagnostics?.setProvider('kg');
         diagnostics?.setResultCount(kgResults.length);
-        if (outputCompact({ query: q, count: kgResults.length, results: kgResults })) return;
+        // 小上限可能已被代码结果占满，不能据此推断知识命中稀少。
+        const captureHint = codeOnly || (limit < 3 && kgResults.length >= limit) ? undefined : knowledgeCaptureHint(
+          kgResults.filter(result => result.sourceType !== 'codegraph').length, limit,
+        );
+        const capturePayload = captureHint ? { knowledgeCaptureHint: captureHint } : {};
+        if (outputCompact({ query: q, count: kgResults.length, results: kgResults, ...capturePayload })) return;
         if (opts.json) {
           diagnostics?.setProvider('kg');
-          console.log(JSON.stringify(withDiagnostics({ query: q, engine: 'maestrograph', count: kgResults.length, summary, results: kgResults }), null, 2));
+          console.log(JSON.stringify(withDiagnostics({ query: q, engine: 'maestrograph', count: kgResults.length, summary, results: kgResults, ...capturePayload }), null, 2));
           return;
         }
         const parts: string[] = [];
@@ -1940,6 +1945,7 @@ export function registerSearchCommand(program: Command): void {
         if (summary.knowhowDocs) parts.push(`knowhow ${summary.knowhowDocs}`);
         const headerSummary = parts.length > 0 ? `${parts.join(' + ')} = ${kgResults.length}` : `${kgResults.length}`;
         console.log(`Search: "${humanQuery}" (${headerSummary}, KG)`);
+        if (captureHint) console.log(`  Capture: ${captureHint}`);
         if (kgResults.length === 0) {
           console.log('  No matches found.');
           return;
@@ -2050,8 +2056,10 @@ export function registerSearchCommand(program: Command): void {
       const wikiCount = merged.filter(r => r.source === 'wiki').length;
       const codeCount = merged.filter(r => r.source === 'code').length;
       const templateCount = merged.filter(r => r.source === 'arch-kb').length;
+      const captureHint = knowledgeCaptureHint(wikiResults.length, limit);
+      const capturePayload = captureHint ? { knowledgeCaptureHint: captureHint } : {};
       diagnostics?.setResultCount(merged.length);
-      if (outputCompact({ query: q, count: merged.length, results: merged, ...(codeHint ? { hint: codeHint } : {}), ...warningPayload })) return;
+      if (outputCompact({ query: q, count: merged.length, results: merged, ...(codeHint ? { hint: codeHint } : {}), ...capturePayload, ...warningPayload })) return;
 
       if (opts.json) {
         const typeCountsJson: Record<string, number> = {};
@@ -2074,6 +2082,7 @@ export function registerSearchCommand(program: Command): void {
           ...(codeOutcome.localStatus ? { localStatus: codeOutcome.localStatus } : {}),
           ...(codeHint ? { codeIndexHint: codeHint } : {}),
           typeCounts: typeCountsJson,
+          ...capturePayload,
           ...warningPayload,
           count: merged.length,
           results: merged,
@@ -2107,6 +2116,8 @@ export function registerSearchCommand(program: Command): void {
       console.log(`Search: "${humanQuery}" (${safeSearchLine(countSummary)}, ${embTag})`);
       for (const warning of warnings) console.log(`  Warning: ${safeSearchText(warning)}`);
       if (codeHint) console.log(`  Note: ${codeHint}`);
+
+      if (captureHint) console.log(`  Capture: ${captureHint}`);
 
       if (qTerms.length > 4) {
         console.log(`  Hint: ${qTerms.length} terms — split into 1-3 keyword queries for better precision`);

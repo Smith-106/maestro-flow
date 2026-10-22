@@ -95,6 +95,8 @@ When the user says "参考", "参照", `knowhow`, `spec`, or "reference the proc
 
 Empty results permit normal discovery only after inspection. If search returns an initialization or recovery hint, execute it and retry first.
 
+**Low-hit knowledge follow-up**: `search` returns `knowledgeCaptureHint` for sparse knowledge matches (fewer than 3, respecting `--limit`); this is a gap signal, not a measured relevance/hit rate. If results are empty, sparse, or largely irrelevant to the task, first refine the 1-3 keyword query and resolve index/recovery hints. Keep any remaining task-specific knowledge gap in mind; **after completing the related task**, distill only validated, reusable findings and stage them through the governed `maestro knowledge stage` flow below, with evidence and the exact Run/Session identity. Review before promotion; never direct-write or auto-promote knowledge, and never manufacture candidates just to improve search coverage. Zero candidates remains valid.
+
 **Re-search triggers** (re-query mid-task with new keywords, never repeat old queries): entering a new module/subsystem boundary; same fix failed twice; before architecture/approach decisions.
 
 ```bash

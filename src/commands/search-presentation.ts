@@ -54,6 +54,7 @@ interface SearchPayloadInput {
   results: readonly PresentationResult[];
   hint?: string;
   codeIndexHint?: string;
+  knowledgeCaptureHint?: string;
   warnings?: string[];
   diagnostics?: unknown;
 }
@@ -62,6 +63,7 @@ export interface CompactSearchPayload {
   count: number;
   results: CompactResult[];
   hint?: string;
+  knowledgeCaptureHint?: string;
   warnings?: string[];
   diagnostics?: unknown;
 }
@@ -123,6 +125,7 @@ export function compactSearchPayload(payload: SearchPayloadInput): CompactSearch
   };
   const hint = payload.hint ?? payload.codeIndexHint;
   if (hint) compact.hint = hint;
+  if (payload.knowledgeCaptureHint) compact.knowledgeCaptureHint = payload.knowledgeCaptureHint;
   if (payload.warnings?.length) compact.warnings = payload.warnings;
   if (payload.diagnostics) compact.diagnostics = payload.diagnostics;
   return compact;
@@ -146,6 +149,7 @@ function shortText(value: string, max: number): string {
 export function renderCompactSearch(payload: CompactSearchPayload): string[] {
   const lines = [`Search: "${safeSearchText(payload.query)}" (${payload.count} results)`];
   if (payload.hint) lines.push(`  Note: ${safeSearchText(payload.hint)}`);
+  if (payload.knowledgeCaptureHint) lines.push(`  Capture: ${safeSearchText(payload.knowledgeCaptureHint)}`);
   for (const warning of payload.warnings ?? []) lines.push(`  Warning: ${safeSearchText(warning)}`);
   if (payload.count === 0) lines.push('  No matches found.');
   for (const result of payload.results) {
@@ -167,6 +171,12 @@ export function renderCompactSearch(payload: CompactSearchPayload): string[] {
     if (result.openCommand) lines.push(`    ${safeSearchText(result.openCommand)}`);
   }
   return lines;
+}
+
+/** 少量命中只是知识缺口线索；尊重调用方主动设置的结果上限。 */
+export function knowledgeCaptureHint(knowledgeCount: number, limit: number): string | undefined {
+  if (knowledgeCount >= Math.min(3, limit)) return undefined;
+  return `Only ${knowledgeCount} knowledge match${knowledgeCount === 1 ? '' : 'es'}; this may indicate a knowledge gap. Check query/index recovery first. After completing the related task, stage validated, reusable findings via maestro knowledge stage (with --content-file and --run, or --session with --evidence), then review before promotion. Zero candidates is valid; do not create entries just to fill search results.`;
 }
 
 /** Do not dump driver errors/paths; retain actionable, bounded partial coverage. */

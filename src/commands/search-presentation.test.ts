@@ -17,7 +17,7 @@ vi.mock('../arch-kb/index.js', () => ({ searchArchKb: mocks.templates, tokenize:
 vi.mock('../search/exact-search.js', () => ({ runExactSearch: mocks.exact }));
 import { MaestroGraph } from '../graph/kg/engine.js';
 import { registerSearchCommand } from './search.js';
-import { compactSearchPayload, linkedCodeWarnings, renderCompactSearch } from './search-presentation.js';
+import { compactSearchPayload, knowledgeCaptureHint, linkedCodeWarnings, renderCompactSearch } from './search-presentation.js';
 
 const cwd = process.cwd();
 let root: string;
@@ -154,8 +154,8 @@ describe('compact CLI presentation', () => {
   it('preserves plain full headers, spacing, scores and template destinations', async () => {
     expect(await action(['--code', '--full'])).toBe('Search: "query" (code 1, bm25)\n  [function] parse  C:/repo/src/parser.ts:17  function parse(input: string)  (10.0000)');
     expect(await action(['--type', 'template', '--full'])).toBe('Search: "query" (template 1 results)\n  Hint: For exact template lookup, use: maestro arch-kb search "query" --type template\n  [arch-kb:template] [reference only; not current project]  Alpha template  templates/alpha.md  (maestro load --type template --id template-alpha)  (1.0000)\n    Reusable architecture pattern');
-    expect(await action(['--wiki-only', '--full'])).toBe('Search: "query" (knowhow 1 = 1 results, +emb(99))\n  [wiki:knowhow]  Useful rule  coding  rule-400  (1.0000)\n    L1: Preview body for query');
-    expect(await action(['--kg', '--full'])).toBe('Search: "query" (codegraph 1 = 1, KG)\n  [codegraph:function]  code:parse  parse  Parse input safely  (7.0)');
+    expect(await action(['--wiki-only', '--full'])).toBe(`Search: "query" (knowhow 1 = 1 results, +emb(99))\n  Capture: ${knowledgeCaptureHint(1, 20)}\n  [wiki:knowhow]  Useful rule  coding  rule-400  (1.0000)\n    L1: Preview body for query`);
+    expect(await action(['--kg', '--full'])).toBe(`Search: "query" (codegraph 1 = 1, KG)\n  Capture: ${knowledgeCaptureHint(0, 20)}\n  [codegraph:function]  code:parse  parse  Parse input safely  (7.0)`);
   });
   it('preserves full content spacing as well as renderer indentation', async () => {
     mocks.code.mockReturnValue([{ ...code, signature: 'function parse(a:  string)' }]);
@@ -207,6 +207,65 @@ describe('compact CLI presentation', () => {
     mocks.templates.mockReturnValue([]); mocks.code.mockReturnValue([]); mocks.unified.mockReturnValue({ directMatches: [] });
     mocks.daemon.mockResolvedValue({ ok: true, filtersApplied: true, results: [] });
     for (const full of [[], ['--full']]) expect(JSON.parse(await action([...args, '--json', ...full]))).toMatchObject({ count: 0, results: [] });
+  });
+  it.each([0, 1, 2, 3])('reminds after sparse knowledge matches (%i), consistently across knowledge routes and formats', async count => {
+    mocks.daemon.mockResolvedValue({ ok: true, filtersApplied: true, results: Array.from({ length: count }, (_, i) => ({ entry: { ...wiki, id: `rule-${i}`, title: `Rule ${i}` }, score: 5 - i })) });
+    mocks.unified.mockReturnValue({ directMatches: Array.from({ length: count }, (_, i) => ({ node: { id: `knowhow:rule-${i}`, name: `Rule ${i}`, kind: 'knowhow_entry', sourceType: 'knowhow', filePath: `.workflow/knowhow/rule-${i}.md`, status: 'active', category: 'coding', definition: 'Reusable finding' }, score: 5 - i })) });
+    for (const args of [[], ['--wiki-only'], ['--kg']]) {
+      for (const full of [[], ['--full']]) {
+        const output = JSON.parse(await action([...args, ...full, '--json']));
+        const text = await action([...args, ...full]);
+        if (count < 3) {
+          expect(output.knowledgeCaptureHint).toContain(`Only ${count} knowledge match`);
+          expect(output.knowledgeCaptureHint).toContain('After completing the related task');
+          expect(output.knowledgeCaptureHint).toContain('validated, reusable');
+          expect(output.knowledgeCaptureHint).toContain('maestro knowledge stage');
+          expect(output.knowledgeCaptureHint).toContain('review before promotion');
+          expect(output.knowledgeCaptureHint).toContain('Zero candidates is valid');
+          expect(text.match(/  Capture:/g)).toHaveLength(1);
+          expect(text).toContain(output.knowledgeCaptureHint);
+        } else {
+          expect(output).not.toHaveProperty('knowledgeCaptureHint');
+          expect(text).not.toContain('  Capture:');
+        }
+      }
+    }
+  });
+  it.each([1, 2])('does not mistake --limit %i for a knowledge gap', async limit => {
+    mocks.daemon.mockResolvedValue({ ok: true, filtersApplied: true, results: Array.from({ length: 4 }, (_, i) => ({ entry: { ...wiki, id: `rule-${i}` }, score: 5 - i })) });
+    mocks.unified.mockReturnValue({ directMatches: Array.from({ length: 4 }, (_, i) => ({ node: { id: `knowhow:rule-${i}`, name: `Rule ${i}`, kind: 'knowhow_entry', sourceType: 'knowhow', filePath: `.workflow/knowhow/rule-${i}.md`, status: 'active', category: 'coding' }, score: 5 - i })) });
+    for (const args of [[], ['--wiki-only'], ['--kg']]) {
+      for (const full of [[], ['--full']]) {
+        expect(JSON.parse(await action([...args, ...full, '--limit', String(limit), '--json']))).not.toHaveProperty('knowledgeCaptureHint');
+      }
+    }
+  });
+  it('keeps recovery hints alongside capture reminders without counting code or global templates as knowledge', async () => {
+    mocks.daemon.mockResolvedValue({ ok: true, filtersApplied: true, results: [] });
+    rmSync(join(root, '.workflow', 'kg', 'maestro.db'));
+    for (const full of [[], ['--full']]) {
+      const output = JSON.parse(await action([...full, '--json']));
+      expect(output.hint ?? output.codeIndexHint).toContain('maestro kg init');
+      expect(output.knowledgeCaptureHint).toContain('Only 0 knowledge matches');
+      const text = await action(full);
+      expect(text.indexOf('maestro kg init')).toBeLessThan(text.indexOf('  Capture:'));
+    }
+  });
+  it.each([1, 2])('does not infer a knowledge gap from a KG limit of %i filled by code', async limit => {
+    mocks.unified.mockReturnValue({ directMatches: Array.from({ length: 4 }, (_, i) => ({ node: { ...code, id: `code:parse-${i}`, filePath: `src/parser-${i}.ts`, sourceType: 'codegraph' }, score: 5 - i })) });
+    for (const full of [[], ['--full']]) {
+      const output = JSON.parse(await action(['--kg', ...full, '--limit', String(limit), '--json']));
+      expect(output.count).toBe(limit);
+      expect(output).not.toHaveProperty('knowledgeCaptureHint');
+    }
+  });
+  it.each([['--code'], ['--kg', '--code'], ['--type', 'template'], ['--exact']])('does not suggest project knowledge capture for source/reference-only searches (%j)', async (...args) => {
+    mocks.code.mockReturnValue([]); mocks.unified.mockReturnValue({ directMatches: [] }); mocks.templates.mockReturnValue([]);
+    mocks.exact.mockResolvedValue({ results: [], truncated: false, timedOut: false, bytesUsed: 0 });
+    for (const full of [[], ['--full']]) {
+      expect(JSON.parse(await action([...args, ...full, '--json']))).not.toHaveProperty('knowledgeCaptureHint');
+      expect(await action([...args, ...full])).not.toContain('  Capture:');
+    }
   });
   it('exposes partial linked failures even when useful local results exist', async () => {
     const linked = join(root, 'linked'); mkdirSync(join(linked, '.workflow'), { recursive: true });
