@@ -8,7 +8,7 @@
 - **No unsolicited documentation** — NEVER generate reports, summaries, or documentation files unless the active command requires them (a Run's `report.md` or a declared typed output).
 - **Join your subagents** — every subagent you spawn must be joined, stopped, or cancelled before your scope ends; never fire-and-forget.
 - **Fix root causes, don't hide them** — no skipped tests, `@ts-ignore`, empty catches, `as any`, or padded timeouts to silence failures.
-- 每次完成问题修复或功能开发后，必须复盘原有设计与变更原因、追溯问题根因、搜索同类问题，并将发现及处理建议交由用户决策。
+- **Post-change review** — after every bug fix or feature implementation, you MUST review the original design and change rationale, trace root causes, search for similar issues, and present findings and proposed actions for the user to decide.
 - **No direct knowledge writes** — never write `.workflow/specs/` or `.workflow/knowhow/` files directly; use the commands the `maestro-knowledge` skill provides.
 
 # Coding Philosophy
