@@ -17,6 +17,16 @@ interface ChangelogEntry {
 
 const changelog: ChangelogEntry[] = [
   {
+    version: '0.5.93',
+    date: '2026-10',
+    changes: [
+      { type: 'feat', text_en: 'Add explicitly selected search providers and managed Tencent Wiki memory projections across CLI, MCP and Dashboard; external results remain reference-only and writes require explicit hash-pinned authorization', text_zh: 'CLI、MCP 与 Dashboard 新增显式选择的搜索 provider 和受管理的 Tencent Wiki 内存投影；外部结果仅供引用，写入要求明确授权及 hash 校验' },
+      { type: 'fix', text_en: 'Reject legacy Execution flags before v3 knowledge staging or recording; align canonical Session auditing and owner-only interactive knowledge closeout', text_zh: 'v3 知识暂存和信号记录在解析前拒绝旧 Execution 参数；统一规范 Session 审计及仅由 owner 执行的交互式知识收尾' },
+      { type: 'fix', text_en: 'Recover teams through exact Run locators and brief continuations, enforce typed artifacts, and allocate a fresh Run for follow-up after sealing', text_zh: '团队通过精确 Run locator 与 brief continuation 恢复，校验带类型的产物，封存后续跑必须分配新 Run' },
+      { type: 'refactor', text_en: 'Bound exact vector top-k selection and parent mapping, and align incremental indexing evidence', text_zh: '优化精确向量 top-k 选择和 parent 映射的资源边界，并对齐增量索引证据' },
+    ],
+  },
+  {
     version: '0.5.92',
     date: '2026-10',
     changes: [
