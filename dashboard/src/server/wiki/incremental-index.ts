@@ -339,12 +339,14 @@ export function updateEmbeddingRanges(
     return { index: null, ranges: new Map(), retainedDocIds: [], invalidatedDocIds: [...changedEntryIds].sort() };
   }
   const nextIds = new Set(nextEntries.map(entry => entry.id));
-  const grouped = new Map<string, Array<{ id: string; vector: Float32Array; hash?: string }>>();
+  // Retain source slots so every parallel metadata array follows the vector
+  // through removal/reordering; spreading previous.fragments would misalign it.
+  const grouped = new Map<string, number[]>();
   for (let slot = 0; slot < previous.docIds.length; slot++) {
     const parent = parentDocId(previous, slot);
     if (!nextIds.has(parent) || changedEntryIds.has(parent)) continue;
     const group = grouped.get(parent) ?? [];
-    group.push({ id: previous.docIds[slot], vector: previous.vectors[slot], hash: previous.contentHashes?.[slot] });
+    group.push(slot);
     grouped.set(parent, group);
   }
   const docOrder = nextEntries.map(entry => entry.id).filter(id => grouped.has(id));
@@ -352,14 +354,20 @@ export function updateEmbeddingRanges(
   const vectors: Float32Array[] = [];
   const contentHashes: string[] = [];
   const chunkDocIds: string[] = [];
+  const fragments: EmbeddingIndex['fragments'] = previous.fragments ? [] : undefined;
   const ranges = new Map<string, EmbeddingRange>();
   for (const parent of docOrder) {
     const start = docIds.length;
     for (const slot of grouped.get(parent) ?? []) {
-      docIds.push(slot.id);
-      vectors.push(slot.vector);
+      docIds.push(previous.docIds[slot]);
+      vectors.push(previous.vectors[slot]);
       chunkDocIds.push(parent);
-      contentHashes.push(slot.hash ?? '');
+      contentHashes.push(previous.contentHashes?.[slot] ?? '');
+      if (fragments) {
+        fragments.length = docIds.length;
+        const fragment = previous.fragments?.[slot];
+        if (fragment) fragments[docIds.length - 1] = fragment;
+      }
     }
     ranges.set(parent, { docId: parent, start, end: docIds.length });
   }
@@ -375,6 +383,7 @@ export function updateEmbeddingRanges(
       vectors,
       chunkDocIds,
       contentHashes,
+      ...(fragments ? { fragments } : {}),
       builtAt: previous.builtAt,
     };
   return { index, ranges, retainedDocIds, invalidatedDocIds };

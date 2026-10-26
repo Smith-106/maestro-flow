@@ -978,13 +978,21 @@ export function mapVectorResultsToParents(
   index: Pick<EmbeddingIndex, 'docIds' | 'chunkDocIds' | 'fragments'>,
   limit = results.length,
 ): VectorSearchResult[] {
+  if (results.length === 0) return [];
+  // Index metadata is publicly mutable. Build only the requested-ID projection
+  // instead of caching by object identity or allocating two full-corpus maps.
+  // Still scan all slots: duplicate IDs keep the last parent and, independently,
+  // the last truthy evidence (a later missing fragment must not erase it).
+  const requestedIds = new Set(results.map(result => result.docId));
   const parentByFragment = new Map<string, string>();
   const evidenceByFragment = new Map<string, SearchFragment>();
   for (let i = 0; i < index.docIds.length; i++) {
+    const docId = index.docIds[i];
+    if (!requestedIds.has(docId)) continue;
     const fragment = index.fragments?.[i];
-    const parentId = index.chunkDocIds?.[i] ?? fragment?.parentId ?? index.docIds[i];
-    parentByFragment.set(index.docIds[i], parentId);
-    if (fragment) evidenceByFragment.set(index.docIds[i], fragment);
+    const parentId = index.chunkDocIds?.[i] ?? fragment?.parentId ?? docId;
+    parentByFragment.set(docId, parentId);
+    if (fragment) evidenceByFragment.set(docId, fragment);
   }
   const best = new Map<string, VectorSearchResult>();
   for (const result of results) {
