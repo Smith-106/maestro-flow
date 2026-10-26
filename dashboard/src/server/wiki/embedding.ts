@@ -405,17 +405,16 @@ async function callEmbeddingApi(
 }
 
 // ---------------------------------------------------------------------------
-// Cosine similarity (flat search — fast enough for <10K docs)
+// Cosine similarity (flat search, with a request-local query norm)
 // ---------------------------------------------------------------------------
 
-function cosineSimilarity(a: Float32Array, b: Float32Array): number {
-  let dot = 0, normA = 0, normB = 0;
+function cosineSimilarity(a: Float32Array, b: Float32Array, queryNorm: number): number {
+  let dot = 0, normB = 0;
   for (let i = 0; i < a.length; i++) {
     dot += a[i] * b[i];
-    normA += a[i] * a[i];
     normB += b[i] * b[i];
   }
-  const denom = Math.sqrt(normA) * Math.sqrt(normB);
+  const denom = queryNorm * Math.sqrt(normB);
   return denom === 0 ? 0 : dot / denom;
 }
 
@@ -907,21 +906,70 @@ function flatCosineSearch(
   limit: number,
   allowedDocIds?: ReadonlySet<string>,
 ): VectorSearchResult[] {
-  const scored: VectorSearchResult[] = [];
+  // Preserve the original accumulation and division order: normalizing Float32
+  // vectors or multiplying by a reciprocal can change exact scores/tie order.
+  let queryNormSquared = 0;
+  for (let i = 0; i < queryVector.length; i++) queryNormSquared += queryVector[i] * queryVector[i];
+  const queryNorm = Math.sqrt(queryNormSquared);
+
+  // The exported API historically used Array.slice, including negative,
+  // fractional and non-finite limits. Keep full selection for those callers.
+  const bounded = Number.isInteger(limit) && limit > 0 && limit < index.docIds.length;
+  const selected: Array<{ slot: number; score: number }> = [];
+  // Negative means left ranks better. Slot order preserves stable-sort ties
+  // even for duplicate IDs or distinct IDs that localeCompare considers equal.
+  const compare = (leftScore: number, leftSlot: number, rightScore: number, rightSlot: number): number =>
+    rightScore - leftScore
+    || index.docIds[leftSlot].localeCompare(index.docIds[rightSlot])
+    || leftSlot - rightSlot;
+
   for (let i = 0; i < index.docIds.length; i++) {
     const parentId = index.chunkDocIds?.[i] ?? index.docIds[i];
     if (allowedDocIds && !allowedDocIds.has(parentId)) continue;
-    const sim = cosineSimilarity(queryVector, index.vectors[i]);
-    if (sim > 0) {
-      scored.push({
-        docId: index.docIds[i],
-        score: sim,
-        ...(index.fragments?.[i] ? { fragment: index.fragments[i] } : {}),
-      });
+    const score = cosineSimilarity(queryVector, index.vectors[i], queryNorm);
+    if (!(score > 0)) continue;
+    if (!bounded) {
+      selected.push({ slot: i, score });
+      continue;
+    }
+
+    // Worst-first heap: reject losing candidates without allocating a result
+    // object. Retain raw fragment slots; parent collapse remains downstream.
+    if (selected.length < limit) {
+      let position = selected.length;
+      const candidate = { slot: i, score };
+      selected.push(candidate);
+      while (position > 0) {
+        const parent = (position - 1) >>> 1;
+        const previous = selected[parent];
+        if (compare(score, i, previous.score, previous.slot) <= 0) break;
+        selected[position] = previous;
+        position = parent;
+      }
+      selected[position] = candidate;
+    } else if (compare(score, i, selected[0].score, selected[0].slot) < 0) {
+      let position = 0;
+      while (position * 2 + 1 < selected.length) {
+        let child = position * 2 + 1;
+        const right = child + 1;
+        if (right < selected.length
+          && compare(selected[child].score, selected[child].slot, selected[right].score, selected[right].slot) < 0) {
+          child = right;
+        }
+        const previous = selected[child];
+        if (compare(score, i, previous.score, previous.slot) >= 0) break;
+        selected[position] = previous;
+        position = child;
+      }
+      selected[position] = { slot: i, score };
     }
   }
-  scored.sort((a, b) => b.score - a.score || a.docId.localeCompare(b.docId));
-  return scored.slice(0, limit);
+  selected.sort((left, right) => compare(left.score, left.slot, right.score, right.slot));
+  return selected.slice(0, limit).map(({ slot, score }) => ({
+    docId: index.docIds[slot],
+    score,
+    ...(index.fragments?.[slot] ? { fragment: index.fragments[slot] } : {}),
+  }));
 }
 
 /** Collapse internal fragment/chunk hits to one highest-scoring parent hit. */
