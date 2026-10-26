@@ -363,6 +363,84 @@ describe('maestro knowledge Execution Run authority', () => {
   });
 });
 
+describe('maestro knowledge v3 Execution parameter isolation', () => {
+  it.each([
+    ['stage', 'run'],
+    ['stage', 'session'],
+    ['record', 'run'],
+    ['record', 'session'],
+  ] as const)('rejects legacy authority before parsing it for %s on a v3 %s', async (command, source) => {
+    const context = createV3RunWithRetainedExecution();
+    const readOpenExecution = vi.spyOn(SessionStore.prototype, 'readOpenExecution');
+    const legacyFields = [
+      // Production regression: request-id alone used to require the other seven fields.
+      ['--request-id', 'req-v3-knowledge'],
+      ['--execution', 'retired-execution'],
+      ['--generation', '1'],
+      ['--expected-execution-revision', '0'],
+      ['--owner-id', 'retired-owner'],
+      ['--owner-kind', 'codex'],
+      ['--lease-epoch', '1'],
+      ['--lease-id', 'test-only-sensitive-value'],
+    ];
+    const missingAuthorityFile = join(projectRoot, 'missing-private-authority.json');
+    writeFileSync(join(projectRoot, 'evidence.md'), 'Verified v3 knowledge authority.\n', 'utf8');
+    const args = command === 'stage'
+      ? ['stage', 'knowhow', 'V3 authority regression', 'Use canonical Session/Run authority.', '--evidence', 'evidence.md:1']
+      : ['record', 'spec:v3-authority', '--signal', 'validated', '--allow-unknown'];
+    const targetArgs = ['--session', context.sessionId, ...(source === 'run' ? ['--run', context.runId] : [])];
+    const attempts = [
+      ...legacyFields.map(args => ({ args, environment: false })),
+      { args: legacyFields.flat(), environment: false },
+      { args: ['--execution-authority', missingAuthorityFile], environment: false },
+      { args: [], environment: true },
+      { args: ['--request-id', 'req-v3-with-environment'], environment: true },
+    ];
+    for (const attempt of attempts) {
+      logs = [];
+      errors = [];
+      process.exitCode = undefined;
+      if (attempt.environment) process.env.MAESTRO_EXECUTION_AUTHORITY_FILE = missingAuthorityFile;
+      else delete process.env.MAESTRO_EXECUTION_AUTHORITY_FILE;
+      await run(...args, ...targetArgs, ...attempt.args, '--json');
+      expect(process.exitCode, JSON.stringify(attempt)).toBe(1);
+      const error = errors.join('\n');
+      expect(error).toContain('uses session/3.0; Execution sidecar authority is not applicable');
+      expect(error).toContain('canonical Session/Run authority');
+      for (let index = 0; index < attempt.args.length; index += 2) {
+        expect(error).toContain(attempt.args[index]);
+      }
+      if (attempt.environment) expect(error).toContain('Unset MAESTRO_EXECUTION_AUTHORITY_FILE');
+      expect(error).not.toContain('Execution-bound knowledge mutation requires');
+      expect(error).not.toContain('Pass --execution');
+      expect(error).not.toContain('ENOENT');
+      expect(error).not.toContain(missingAuthorityFile);
+      expect(error).not.toContain('test-only-sensitive-value');
+      expect(logs).toEqual([]);
+      expect(readOpenExecution).not.toHaveBeenCalled();
+      expect(existsSync(join(context.store.runDir(context.sessionId, context.runId), 'knowledge-delta.json')))
+        .toBe(false);
+      expect(existsSync(join(context.store.sessionDir(context.sessionId), 'knowledge-delta.json')))
+        .toBe(false);
+    }
+
+    // Following the diagnostic's recovery instructions must restore the normal
+    // v3 path, without requiring any legacy Execution authority.
+    delete process.env.MAESTRO_EXECUTION_AUTHORITY_FILE;
+    process.exitCode = undefined;
+    errors = [];
+    await run(...args, ...targetArgs, '--json');
+    expect(process.exitCode ?? 0).toBe(0);
+    expect(errors).toEqual([]);
+    expect(JSON.parse(logs.at(-1)!)).toMatchObject({ session_id: context.sessionId });
+    expect(readOpenExecution).not.toHaveBeenCalled();
+    const deltaDir = source === 'run'
+      ? context.store.runDir(context.sessionId, context.runId)
+      : context.store.sessionDir(context.sessionId);
+    expect(existsSync(join(deltaDir, 'knowledge-delta.json'))).toBe(true);
+  });
+});
+
 describe('maestro knowledge Run lifecycle CLI', () => {
   it('resolves --repo during stage and freezes the full canonical target payload', async () => {
     const sourceIdentity = initializeRepositoryIdentity(projectRoot, { repoName: 'CLI Source' });

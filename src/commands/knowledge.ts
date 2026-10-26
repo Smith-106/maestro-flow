@@ -115,13 +115,37 @@ function suppliedExecutionFields(options: KnowledgeExecutionOptions): Array<[str
 
 function resolveKnowledgeExecutionAuthority(
   projectRoot: string,
+  store: SessionStore,
   options: KnowledgeExecutionOptions,
-  target: { sessionId: string; runId: string },
-  required: boolean,
+  target: { sessionId: string; runId?: string },
 ): KnowledgeExecutionAuthority | undefined {
   const authorityFile = options.executionAuthority ?? process.env[EXECUTION_AUTHORITY_FILE_ENV];
   const explicitFields = suppliedExecutionFields(options);
   const explicitAttempt = explicitFields.some(([, value]) => value !== undefined && value !== '');
+  // Select the authority model before reading any legacy file or Execution state.
+  // In particular, --request-id alone must not turn a v3 mutation into a request
+  // to complete the retired Execution tuple. Never echo authority values here.
+  if (store.readSessionRecordReadOnly(target.sessionId).schema_version === 'session/3.0') {
+    const flags = explicitFields.filter(([, value]) => value !== undefined).map(([flag]) => flag);
+    if (options.executionAuthority !== undefined) flags.push('--execution-authority');
+    const environmentSupplied = Boolean(process.env[EXECUTION_AUTHORITY_FILE_ENV]);
+    if (flags.length > 0 || environmentSupplied) {
+      throw new Error(
+        `Session ${target.sessionId} uses session/3.0; Execution sidecar authority is not applicable. `
+        + (flags.length > 0 ? `Remove ${flags.join(', ')}. ` : '')
+        + (environmentSupplied ? `Unset ${EXECUTION_AUTHORITY_FILE_ENV}. ` : '')
+        + 'Use canonical Session/Run authority instead; no Execution lease is required.',
+      );
+    }
+    return undefined;
+  }
+  if (!target.runId) {
+    if (authorityFile || explicitAttempt) {
+      throw new Error('Execution sidecar authority is valid only with a Run-source target; pass --run <run-id>');
+    }
+    return undefined;
+  }
+  const required = store.readOpenExecution(target.sessionId) !== null;
   if (authorityFile && explicitAttempt) {
     throw new Error('Use either --execution-authority / MAESTRO_EXECUTION_AUTHORITY_FILE or the explicit Execution flag tuple, not both');
   }
@@ -631,9 +655,9 @@ export function registerKnowledgeCommand(program: Command): void {
     .option('--run <run-id>', 'Explicit Run ID (run-source staging)')
     .option('--session <maestro-session-id>', 'Existing Maestro Workflow Session ID (not a Pi chat/session-history ID; usable without --run)')
     .option('--channel <name>', 'Caller identity channel (write authorization, see knowledge-session-decoupling-mvp.md)')
-    .option('--execution <id>', 'exact Execution ID for an Execution-bound Run')
+    .option('--execution <id>', 'Legacy Execution-bound Run only: exact Execution ID (not session/3.0)')
     .option('--generation <n>', 'exact Execution generation', parsePositiveInteger)
-    .option('--request-id <id>', 'idempotent knowledge sidecar request ID')
+    .option('--request-id <id>', 'Legacy Execution sidecar idempotency key (not session/3.0)')
     .option('--expected-execution-revision <n>', 'expected Execution revision', parseNonNegativeInteger)
     .option('--owner-id <id>', 'Execution lease owner ID')
     .option('--owner-kind <kind>', `Execution lease owner kind: ${EXECUTION_OWNER_KINDS.join('|')}`, parseOwnerKind)
@@ -707,22 +731,7 @@ export function registerKnowledgeCommand(program: Command): void {
           explicitChannel: opts.channel,
         });
         if (authority.warning) console.error(`Warning: ${authority.warning}`);
-        let executionAuthority: KnowledgeExecutionAuthority | undefined;
-        if (authority.kind === 'run') {
-          const sessionSchema = store.readSessionRecordReadOnly(authority.sessionId).schema_version;
-          const hasOpenExecution = sessionSchema !== 'session/3.0'
-            && store.readOpenExecution(authority.sessionId) !== null;
-          executionAuthority = resolveKnowledgeExecutionAuthority(
-            projectRoot,
-            opts,
-            { sessionId: authority.sessionId, runId: authority.runId },
-            hasOpenExecution,
-          );
-        } else if (opts.executionAuthority
-          || process.env[EXECUTION_AUTHORITY_FILE_ENV]
-          || suppliedExecutionFields(opts).some(([, value]) => value !== undefined && value !== '')) {
-          throw new Error('Execution sidecar authority is valid only with a Run-source target; pass --run <run-id>');
-        }
+        const executionAuthority = resolveKnowledgeExecutionAuthority(projectRoot, store, opts, authority);
 
         let signal: KnowledgeInputSignal | null = null;
         let signalIds: string[] = [];
@@ -932,9 +941,9 @@ export function registerKnowledgeCommand(program: Command): void {
     .option('--run <run-id>', 'Explicit Run ID (run-source attribution)')
     .option('--session <session-id>', 'Explicit Session ID (session-source attribution; usable without --run)')
     .option('--channel <name>', 'Caller identity channel (write authorization)')
-    .option('--execution <id>', 'exact Execution ID for an Execution-bound Run')
+    .option('--execution <id>', 'Legacy Execution-bound Run only: exact Execution ID (not session/3.0)')
     .option('--generation <n>', 'exact Execution generation', parsePositiveInteger)
-    .option('--request-id <id>', 'idempotent knowledge sidecar request ID')
+    .option('--request-id <id>', 'Legacy Execution sidecar idempotency key (not session/3.0)')
     .option('--expected-execution-revision <n>', 'expected Execution revision', parseNonNegativeInteger)
     .option('--owner-id <id>', 'Execution lease owner ID')
     .option('--owner-kind <kind>', `Execution lease owner kind: ${EXECUTION_OWNER_KINDS.join('|')}`, parseOwnerKind)
@@ -975,22 +984,7 @@ export function registerKnowledgeCommand(program: Command): void {
           explicitChannel: opts.channel,
         });
         if (authority.warning) console.error(`Warning: ${authority.warning}`);
-        let executionAuthority: KnowledgeExecutionAuthority | undefined;
-        if (authority.kind === 'run') {
-          const sessionSchema = store.readSessionRecordReadOnly(authority.sessionId).schema_version;
-          const hasOpenExecution = sessionSchema !== 'session/3.0'
-            && store.readOpenExecution(authority.sessionId) !== null;
-          executionAuthority = resolveKnowledgeExecutionAuthority(
-            projectRoot,
-            opts,
-            { sessionId: authority.sessionId, runId: authority.runId },
-            hasOpenExecution,
-          );
-        } else if (opts.executionAuthority
-          || process.env[EXECUTION_AUTHORITY_FILE_ENV]
-          || suppliedExecutionFields(opts).some(([, value]) => value !== undefined && value !== '')) {
-          throw new Error('Execution sidecar authority is valid only with a Run-source target; pass --run <run-id>');
-        }
+        const executionAuthority = resolveKnowledgeExecutionAuthority(projectRoot, store, opts, authority);
         await validateKnowledgeSignalIds(projectRoot, knowledgeIds, opts.allowUnknown);
         const evidence = opts.evidence?.split(',').map(ref => ref.trim()).filter(Boolean) ?? [];
         let result: { session_id: string; recorded: number; run_id?: string; origin?: 'session' };
