@@ -292,7 +292,10 @@ produces:
 gates:
   entry: []
   exit: []`);
-    expect(() => checkRun(projectRoot, changed.run_id)).toThrow(/lifecycle contract changed/);
+    const diagnostic = checkRun(projectRoot, changed.run_id);
+    expect(diagnostic.contract_drift).toMatchObject({ mode: 'diagnostic' });
+    expect(diagnostic.next.command).toContain(`maestro run rebind ${changed.run_id}`);
+    expect(() => completeRun(projectRoot, changed.run_id)).toThrow(/lifecycle contract changed/);
   });
 
   it('audits prompt-only and equivalent snapshot/hash rebinds', () => {
@@ -397,7 +400,10 @@ gates:
     writeFileSync(runPath, JSON.stringify(legacy, null, 2));
     writeFileSync(join(projectRoot, '.claude', 'commands', 'legacy-drift.md'), '\n# Prompt edit\n', { flag: 'a' });
 
-    expect(() => checkRun(projectRoot, created.run_id)).toThrow(/maestro run rebind/);
+    const diagnostic = checkRun(projectRoot, created.run_id);
+    expect(diagnostic.contract_drift).toMatchObject({ mode: 'diagnostic' });
+    expect(diagnostic.next.command).toContain(`maestro run rebind ${created.run_id}`);
+    expect(() => completeRun(projectRoot, created.run_id)).toThrow(/maestro run rebind/);
     const rebound = rebindRunCommand(projectRoot, created.run_id, 'accept documentation-only edit');
     expect(rebound.rebind_kind).toBe('legacy_contract_backfill');
     expect(rebound.contract_hash).toMatch(/^[a-f0-9]{64}$/);
