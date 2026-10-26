@@ -246,7 +246,7 @@ function currentDiagnostic(projectRoot: string): { diagnostic: KnowledgeReposito
 function pendingPromotions(projectRoot: string): PendingCrossRepoPromotion[] {
   const store = new SessionStore(projectRoot);
   const output: PendingCrossRepoPromotion[] = [];
-  for (const session of store.listSessionsReadOnly().candidates) {
+  for (const session of store.listSessionRecordsReadOnly().candidates) {
     try {
       const summary = summarizeSessionKnowledge(projectRoot, session.sessionId, { readOnly: true, strict: true });
       for (const candidate of summary.candidates) {

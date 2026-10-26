@@ -250,7 +250,7 @@ function inspectPipeline(projectRoot: string): {
   const sessionsRoot = join(projectRoot, '.workflow', 'sessions');
   if (!existsSync(sessionsRoot)) return { summary, findings };
   const store = new SessionStore(projectRoot);
-  const listed = store.listSessionsReadOnly();
+  const listed = store.listSessionRecordsReadOnly();
   const sessions = listed.candidates;
   summary.sessions = sessions.length + listed.exclusions.length;
   for (const exclusion of listed.exclusions) {

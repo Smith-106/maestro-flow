@@ -281,6 +281,11 @@ export interface SessionListResult {
   exclusions: SessionListExclusion[];
 }
 
+export interface SessionRecordListResult {
+  candidates: Array<{ sessionId: string; session: SessionStateRead }>;
+  exclusions: Array<SessionListExclusion & { code: 'CORRUPT' }>;
+}
+
 export interface LocatedRunRecord {
   sessionId: string;
   run: RunRead;
@@ -2245,6 +2250,30 @@ export class SessionStore {
       sessionId: locatedSessionId,
       run: this.readRun(locatedSessionId, runId),
     };
+  }
+
+  /**
+   * Enumerate strict canonical Session authority across schema generations.
+   * Does not load compatibility bundles, acquire locks, recover, or write projections.
+   */
+  listSessionRecordsReadOnly(): SessionRecordListResult {
+    const candidates: SessionRecordListResult['candidates'] = [];
+    const exclusions: SessionRecordListResult['exclusions'] = [];
+    if (!existsSync(this.sessionsRoot)) return { candidates, exclusions };
+    for (const sessionId of readdirSync(this.sessionsRoot).sort()) {
+      const path = join(this.sessionsRoot, sessionId);
+      try {
+        if (!statSync(path).isDirectory() || !existsSync(join(path, 'session.json'))) continue;
+        candidates.push({ sessionId, session: this.readSessionRecordReadOnly(sessionId) });
+      } catch (error) {
+        exclusions.push({
+          sessionId,
+          code: 'CORRUPT',
+          detail: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    return { candidates, exclusions };
   }
 
   /** Enumerate canonical Session files only; state.json is never consulted. */

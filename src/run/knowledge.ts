@@ -1668,7 +1668,7 @@ export function summarizeSessionKnowledge(
     schema_version: 'session-knowledge-summary/1.0',
     session_id: sessionId,
     run_count: runIds.length,
-    ledger_count: ledgers.length,
+    ledger_count: ledgerViews.length,
     input_totals: inputTotals,
     input_totals_by_source: inputTotalsBySource,
     inputs,
