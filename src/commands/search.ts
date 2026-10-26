@@ -193,6 +193,8 @@ export interface UnifiedSearchOptions {
   includeDeprecated?: boolean;
   /** Human-facing target repository selector. Explicit selection also filters origin. */
   repo?: string;
+  /** Host-resolved current root (MCP may not share the process working directory). */
+  projectRoot?: string;
   /** Pre-resolved target used by host-owned callers. */
   targetRepository?: RepositoryContext;
   /** Optional raw recorder used by the built adapter; absent in normal CLI calls. */
@@ -527,7 +529,7 @@ export function selectDiverseWikiCandidates(
 export async function runUnifiedSearch(q: string, opts: UnifiedSearchOptions & { skipEmbedding?: boolean }): Promise<SearchResult[]> {
   const diagnostics = opts.diagnostics;
   const repositoryStartedAt = performance.now();
-  const currentRepository = resolveRepositoryContext('current', { projectRoot: process.cwd() });
+  const currentRepository = resolveRepositoryContext('current', { projectRoot: opts.projectRoot ?? process.cwd() });
   const targetRepository = opts.targetRepository ?? (opts.repo
     ? resolveRepositoryContext(opts.repo, { projectRoot: currentRepository.projectRoot })
     : currentRepository);
@@ -1711,6 +1713,7 @@ export function registerSearchCommand(program: Command): void {
     .option('--code', 'Code graph results only (no wiki)')
     .option('--kg', 'KG unified search (MaestroGraph full-source)')
     .option('--wiki-only', 'Search wiki only, skip code results')
+    .option('--providers <ids>', 'Explicit providers: comma-separated local and configured provider IDs (versioned result envelope)')
     .option('--workspace <name>', 'Filter results to a specific linked workspace')
     .option('--repo <selector>', 'Target repository (current, ID, linked alias, or unique name)')
     .option('--include-linked-code', 'Include explicitly shared linked CodeGraph results')
@@ -1750,6 +1753,18 @@ export function registerSearchCommand(program: Command): void {
         return true;
       };
       try {
+        if (opts.providers !== undefined) {
+          try {
+            const { runProviderCli } = await import('../search/providers/cli.js');
+            await runProviderCli(q, opts);
+          } catch {
+            // Even module/bootstrap failures must not expose paths, URLs or credentials.
+            process.exitCode = 1;
+            if (opts.json) console.log(JSON.stringify({ schemaVersion: 'maestro-search/1.0', error: 'provider-error', mutationAuthorized: false }));
+            else console.error('Error: provider-error');
+          }
+          return;
+        }
         const resolvedTag = opts.tag ?? opts.kind;
         const wikiOnly = opts.wikiOnly === true || typeof resolvedTag === 'string' || typeof opts.repo === 'string';
       const codeOnly = opts.code === true;

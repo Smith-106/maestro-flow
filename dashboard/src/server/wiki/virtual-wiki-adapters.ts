@@ -189,10 +189,11 @@ export async function loadVirtualEntries(
   absPath: string,
   adapter: (row: unknown, sourcePath: string, line: number) => WikiEntry | null,
   relPath: string,
+  capturedContent?: string,
 ): Promise<WikiEntry[]> {
   let raw: string;
   try {
-    raw = await readFile(absPath, 'utf-8');
+    raw = capturedContent ?? await readFile(absPath, 'utf-8');
   } catch {
     warn(`unreadable:${absPath}`, `cannot read ${absPath}`);
     return [];

@@ -4,7 +4,8 @@
   "description": "Linear-style kanban board dashboard for Maestro",
   "type": "module",
   "imports": {
-    "#maestro-transformers": "./vendor/transformers/dist/transformers.node.mjs"
+    "#maestro-transformers": "./vendor/transformers/dist/transformers.node.mjs",
+    "#maestro-dashboard/wiki/*": "./dist-server/dashboard/src/server/wiki/*"
   },
   "private": true,
   "scripts": {

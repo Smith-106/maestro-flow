@@ -301,6 +301,12 @@ export function resolveWikiIndexerRole(config: Pick<WikiIndexerConfig, 'role' | 
   return config.role ?? wikiIndexerRoleFromPersistence(config.persistence);
 }
 
+/** Bytes and timestamps already captured and checked by a bounded source reader. */
+export interface CapturedWikiSource {
+  content: string;
+  stats: { birthtimeMs: number; mtimeMs: number };
+}
+
 export interface WikiIndexerConfig {
   workflowRoot: string;
   linkedWorkspaces?: LinkedWorkspaceConfig[];
@@ -2333,6 +2339,21 @@ export class WikiIndexer {
   }
 
   /**
+   * Parse only supplied canonical source bytes, without loading an index/cache,
+   * transcripts or other repositories. The caller owns secure bounded capture.
+   */
+  async parseCapturedCanonicalSource(path: string, captured: CapturedWikiSource): Promise<WikiEntry[]> {
+    const rel = normalizeManifestPath(path);
+    const sourceKind = classifySourcePath(rel);
+    if (path !== rel || !['spec', 'knowhow', 'domain', 'issue'].includes(sourceKind)) return [];
+    const source: SourceManifestEntry = {
+      path: rel, sourceKind, size: Buffer.byteLength(captured.content),
+      mtimeMs: captured.stats.mtimeMs, contentHash: '', entryIds: [],
+    };
+    return this.scanIncrementalSource(source, { kind: 'add', path: rel, sourceKind }, undefined, captured);
+  }
+
+  /**
    * Parse one changed local covered source for the opt-in incremental path.
    * This intentionally mirrors scanFiles/scanVirtual projection semantics and
    * never reaches Session, KG, linked-workspace, or transcript adapters.
@@ -2341,6 +2362,7 @@ export class WikiIndexer {
     source: SourceManifestEntry,
     _change: SourceChange,
     signal?: AbortSignal,
+    captured?: CapturedWikiSource,
   ): Promise<WikiEntry[]> {
     if (signal?.aborted) {
       throw signal.reason instanceof Error ? signal.reason : new Error('incremental index aborted');
@@ -2364,7 +2386,7 @@ export class WikiIndexer {
           || (candidatePath === normalizeManifestPath(relative(this.workflowRoot, candidate.dir)));
       });
       if (!scope) return [];
-      const container = await this.parseFileEntry(absPath, 'spec', scope.allowedRoot);
+      const container = await this.parseFileEntry(absPath, 'spec', scope.allowedRoot, captured);
       if (!container) return [];
       const name = basename(absPath);
       const stem = basename(name, extname(name));
@@ -2424,7 +2446,7 @@ export class WikiIndexer {
     }
 
     if (source.sourceKind === 'knowhow') {
-      const entry = await this.parseFileEntry(absPath, 'knowhow');
+      const entry = await this.parseFileEntry(absPath, 'knowhow', this.workflowRoot, captured);
       if (!entry) return [];
       const name = basename(absPath);
       if (!entry.category) {
@@ -2485,14 +2507,14 @@ export class WikiIndexer {
     }
 
     if (source.sourceKind === 'domain') {
-      const entries = await this.scanDomain();
+      const entries = await this.scanDomain(captured);
       applyRepositoryOrigin(entries, this.currentRepository);
       return entries.filter(entry => normalizeManifestPath(entry.source.path) === rel);
     }
 
     if (source.sourceKind === 'issue') {
       const sourceRel = toForwardSlash(relative(this.workflowRoot, absPath));
-      const entries = await loadVirtualEntries(absPath, adaptIssueRow, sourceRel);
+      const entries = await loadVirtualEntries(absPath, adaptIssueRow, sourceRel, captured?.content);
       applyRepositoryOrigin(entries, this.currentRepository);
       return entries;
     }
@@ -2544,7 +2566,7 @@ export class WikiIndexer {
   /**
    * Scan .workflow/domain/glossary.json and produce WikiEntry[] for each term.
    */
-  private async scanDomain(): Promise<WikiEntry[]> {
+  private async scanDomain(captured?: CapturedWikiSource): Promise<WikiEntry[]> {
     const glossaryPath = resolveAllowedSourcePath(
       join(this.workflowRoot, 'domain', 'glossary.json'),
       this.workflowRoot,
@@ -2552,12 +2574,12 @@ export class WikiIndexer {
     );
     if (!glossaryPath) return [];
     try {
-      const raw = await readFile(glossaryPath, 'utf-8');
+      const raw = captured?.content ?? await readFile(glossaryPath, 'utf-8');
       const glossary = JSON.parse(raw);
       if (!Array.isArray(glossary.terms)) return [];
 
-      let glossaryStat: Awaited<ReturnType<typeof stat>>;
-      try { glossaryStat = await stat(glossaryPath); } catch { return []; }
+      let glossaryStat: { mtimeMs: number };
+      try { glossaryStat = captured?.stats ?? await stat(glossaryPath); } catch { return []; }
       const fileDate = new Date(glossaryStat.mtimeMs).toISOString();
 
       return glossary.terms.map((term: Record<string, unknown>) => {
@@ -2586,6 +2608,8 @@ export class WikiIndexer {
           related: relationships.map(r => `domain-${r}`),
           source: { kind: 'file' as const, path: 'domain/glossary.json' },
           body: bodyLines.join('\n'),
+          // Capture retains the complete selected term, never its glossary siblings.
+          ...(captured ? { raw: term } : {}),
           ext: {
             tier: term.tier ?? 'core',
             sourceKind: (term.source as Record<string, unknown>)?.kind ?? 'unknown',
@@ -3159,15 +3183,16 @@ export class WikiIndexer {
     absPath: string,
     type: WikiNodeType,
     allowedRoot = this.workflowRoot,
+    captured?: CapturedWikiSource,
   ): Promise<WikiEntry | null> {
     const realPath = resolveAllowedSourcePath(absPath, allowedRoot, 'file');
     if (!realPath) return null;
 
     let raw: string;
-    let stats: Awaited<ReturnType<typeof stat>>;
+    let stats: { birthtimeMs: number; mtimeMs: number };
     try {
-      raw = await readFile(realPath, 'utf-8');
-      stats = await stat(realPath);
+      raw = captured?.content ?? await readFile(realPath, 'utf-8');
+      stats = captured?.stats ?? await stat(realPath);
     } catch {
       return null;
     }

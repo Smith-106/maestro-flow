@@ -89,13 +89,30 @@ async function getIndexer(projectRoot: string): Promise<WikiIndexer> {
 export const schema: ToolSchema = {
   name: 'maestro_wiki_search',
   description:
-    'Search wiki knowledge base (specs, knowhow, domains, issues) with low-latency BM25 and optional semantic reranking.',
+    'Search wiki knowledge base (specs, knowhow, domains, issues) with low-latency BM25 and optional semantic reranking. Explicit providers select a versioned read-only envelope; external results are reference-only, not project authority.',
   inputSchema: {
     type: 'object',
     properties: {
       query: {
         type: 'string',
         description: 'Search query',
+      },
+      providers: {
+        type: 'array',
+        minItems: 1,
+        maxItems: 8,
+        items: { type: 'string', maxLength: 128 },
+        description: 'Explicit local and/or configured provider IDs; omitted preserves local wiki search. Remote queries export query text; unsupported modes/facets fail closed.',
+      },
+      type: { type: 'string', description: 'Wiki type facet; requires explicit providers (unsupported providers fail before HTTP).' },
+      category: { type: 'string', description: 'Wiki category facet; requires explicit providers.' },
+      tag: { type: 'string', description: 'Exact Wiki tag facet; requires explicit providers.' },
+      keyword: { type: 'string', description: 'Wiki keyword facet; requires explicit providers.' },
+      workspace: { type: 'string', description: 'Host-authorized Wiki workspace facet; requires explicit providers.' },
+      includeDeprecated: { type: 'boolean', description: 'Include deprecated local knowledge; requires explicit providers.' },
+      readOnlyProbe: {
+        type: 'boolean',
+        description: 'Hermetic local-only probe using the versioned envelope; rejects remote providers before configuration or network access.',
       },
       limit: {
         type: 'number',
@@ -153,6 +170,17 @@ export async function handler(params: Record<string, unknown>): Promise<CcwToolR
   const skipEmbedding = params.skipEmbedding === true || !semanticRequested;
 
   const projectRoot = resolve(getProjectRoot());
+  if (params.providers === undefined && ['type', 'category', 'tag', 'keyword', 'workspace', 'includeDeprecated'].some(key => params[key] !== undefined)) {
+    return { success: false, error: 'invalid-request' };
+  }
+  if (params.providers !== undefined || params.readOnlyProbe === true) {
+    try {
+      const { runProviderMcp } = await import('../search/providers/mcp.js');
+      return await runProviderMcp({ ...params, providers: params.providers ?? ['local'] }, projectRoot);
+    } catch {
+      return { success: false, error: 'provider-error' };
+    }
+  }
   const workflowRoot = resolve(projectRoot, '.workflow');
   let currentRepository: RepositoryContext;
   let targetRepository: RepositoryContext;

@@ -10,6 +10,8 @@ import {
 import type { WikiFilters, WikiStatus, WikiNodeType, WikiScope } from '../wiki/wiki-types.js';
 import { computeHealth, detectHubs, detectOrphans } from '../wiki/graph-analysis.js';
 import { WikiWriter, WikiWriteError } from '../wiki/writer.js';
+import { registerSearchProviderRoutes } from './search-providers.js';
+import { registerMemoryProjectionRoutes } from './memory-projections.js';
 
 export interface WikiRouteContext {
   workflowRoot: string;
@@ -121,6 +123,8 @@ function createWikiRouteHandlers(
   eventBus: DashboardEventBus,
 ): DisposableWikiRoutes {
   const app = new Hono();
+  registerSearchProviderRoutes(app, runtime.getContext, runtime.isCurrent);
+  registerMemoryProjectionRoutes(app, runtime.getContext, runtime.isCurrent);
 
   // Warm the cache on mount and emit a fresh invalidation signal. Do not emit
   // a result from a context that was replaced while its scan was in flight.
