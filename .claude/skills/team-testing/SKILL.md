@@ -4,6 +4,15 @@ disable-model-invocation: true
 description: Unified team skill for testing team. Progressive test coverage through Generator-Critic loops, shared memory, and dynamic layer selection. Triggers on "team testing".
 allowed-tools: TeamCreate(*), TeamDelete(*), SendMessage(*), TaskCreate(*), TaskUpdate(*), TaskList(*), TaskGet(*), Agent(*), AskUserQuestion(*), Read(*), Write(*), Edit(*), Bash(*), Glob(*), Grep(*), mcp__maestro__team_msg(*)
 session-mode: run
+contract:
+  contract_version: 2.1
+  consumes: []
+  produces:
+    - {path: outputs/strategy, kind: testing-strategy-collection, schema: testing-strategy-collection/1.0, role: attachment, required: false}
+    - {path: outputs/tests, kind: testing-tests-collection, schema: testing-tests-collection/1.0, role: attachment, required: false}
+    - {path: outputs/results, kind: testing-results-collection, schema: testing-results-collection/1.0, role: attachment, required: false}
+    - {path: outputs/analysis, kind: testing-analysis-collection, schema: testing-analysis-collection/1.0, role: primary, required: false}
+  gates: {entry: [], exit: []}
 ---
 
 <required_reading>
@@ -122,7 +131,7 @@ AskUserQuestion({
 ## Session Directory
 
 ```
-{run_dir}/work/team/
+{run_dir}/work/team/            # Coordination only; outputs/ is a sibling under {run_dir}
 ├── .msg/messages.jsonl     # Team message bus
 ├── .msg/meta.json          # Session metadata
 ├── wisdom/                 # Cross-task knowledge

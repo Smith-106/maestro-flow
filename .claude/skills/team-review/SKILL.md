@@ -4,6 +4,14 @@ disable-model-invocation: true
 description: "Unified team skill for code review. 3-role pipeline: scanner, reviewer, fixer. Triggers on team-review."
 allowed-tools: TeamCreate(*), TeamDelete(*), SendMessage(*), TaskCreate(*), TaskUpdate(*), TaskList(*), TaskGet(*), Agent(*), AskUserQuestion(*), Read(*), Write(*), Edit(*), Bash(*), Glob(*), Grep(*), mcp__maestro__team_msg(*)
 session-mode: run
+contract:
+  contract_version: 2.1
+  consumes: []
+  produces:
+    - {path: outputs/scan, kind: review-scan-collection, schema: review-scan-collection/1.0, role: attachment, required: false}
+    - {path: outputs/review, kind: review-findings-collection, schema: review-findings-collection/1.0, role: primary, required: false}
+    - {path: outputs/fix, kind: review-fix-collection, schema: review-fix-collection/1.0, role: attachment, required: false}
+  gates: {entry: [], exit: []}
 ---
 
 <required_reading>

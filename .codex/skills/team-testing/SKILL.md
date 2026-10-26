@@ -22,14 +22,34 @@ allowed-tools:
   - update_plan
   - wait_agent
 session-mode: run
-version: 0.5.92
 contract:
-  discovery: self-described
+  contract_version: 2.1
   consumes: []
-  produces: []
+  produces:
+    - path: outputs/strategy
+      kind: testing-strategy-collection
+      schema: testing-strategy-collection/1.0
+      role: attachment
+      required: false
+    - path: outputs/tests
+      kind: testing-tests-collection
+      schema: testing-tests-collection/1.0
+      role: attachment
+      required: false
+    - path: outputs/results
+      kind: testing-results-collection
+      schema: testing-results-collection/1.0
+      role: attachment
+      required: false
+    - path: outputs/analysis
+      kind: testing-analysis-collection
+      schema: testing-analysis-collection/1.0
+      role: primary
+      required: false
   gates:
     entry: []
     exit: []
+version: 0.5.92
 ---
 
 > **Agent timeout**: `spawn_agent` 异步执行且无内置超时 — 除明确短任务外一律 `spawn_agent` 后立即 `wait_agent({ timeout_ms: 3600000 })`（上限 1 小时）阻塞等待，绝不依赖 30000 默认值；`timed_out: true` 且 Agent 未完成时再次 `wait_agent` 续等，不丢弃。批量场景使用 `spawn_agents_on_csv({ max_runtime_seconds: 3600, ... })`。
@@ -150,7 +170,7 @@ request_user_input({
 ## Session Directory
 
 ```
-{run_dir}/work/team/
+{run_dir}/work/team/            # Coordination only; outputs/ is a sibling under {run_dir}
 ├── .msg/messages.jsonl     # Team message bus
 ├── .msg/meta.json          # Session metadata
 ├── wisdom/                 # Cross-task knowledge

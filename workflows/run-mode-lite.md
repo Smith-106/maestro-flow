@@ -14,7 +14,7 @@ Lightweight Session/Run lifecycle for team skills. Canonical actions are **negot
 
 ## Create
 
-> **Dispatched by an orchestrator?** If the birth packet already carries exact `session_id` / `run_id` / `run_dir` / `step_id`, store the public locator in `team-session.json` and do **NOT** call `maestro run create`. The dispatching orchestrator owns completion and keeps mutation authority out of team state.
+> **Dispatched by an orchestrator?** If the birth packet already carries exact `session_id` / `run_id` / `run_dir` / `step_id`, store the public locator (`run.session_id`, `run.run_id`, `run.run_dir`) in `team-session.json` and do **NOT** call `maestro run create`. The dispatching orchestrator owns completion and keeps mutation authority out of team state.
 
 For a self-started team Run, use three receipt-chained mutations. `--actor` carries the authorized identity (`--participant` defaults to it; the CLI derives a stable request ID per distinct invocation); each revision placeholder is the exact value returned by the immediately preceding receipt.
 
@@ -33,19 +33,20 @@ For a self-started team Run, use three receipt-chained mutations. `--actor` carr
    `maestro run create <skill-name> "<task text>" --session {session_id} --run {run_id} --step {step_id} [--goal "<goal>"] [--input <ART-id> ...] --actor {actor_id} [--evidence <ref> ...] --expected-orchestration-revision {step_orchestration_revision} --json`
 
    `--goal` is Run metadata. `--input` accepts only sealed same-Session Artifact IDs; it never carries raw task prose. Legacy positional compatibility after `-- <args...>` remains v2-only.
-5. Retain `run_id` and `run_dir`. Merge the public locator into `{run_dir}/work/team/team-session.json` under `"run"`; never persist participant/actor authority there.
+5. Retain `session_id`, `run_id`, and `run_dir`. Merge the public locator into `{run_dir}/work/team/team-session.json` under `"run"`; never persist participant/actor authority there.
 
 ### Team State Authority
 
 - `{run_dir}/work/team/team-session.json` is the single coordinator-owned state file. It contains coordination state and the public `run` locator used by the team-worker fallback.
 - Every state update is a merge-write: coordination updates MUST preserve `run`; Run updates MUST preserve coordination fields. Do not create a sibling `team-state.json`.
-- Workers may read `team-session.json` to resolve `run.run_dir`, but only the coordinator writes it.
+- Workers may read `team-session.json` to resolve `run.run_dir`, but only the coordinator writes it. A top-level team `session_id` may be the Run ID for the message bus; canonical Maestro Session identity is `run.session_id`.
 
 ## Artifact Boundary
 
 - Formal deliverables go under `{run_dir}/outputs/` (filename stem = artifact kind).
 - Every new formal JSON deliverable MUST contain a complete top-level `_meta` object. `kind` and `schema` are required together; `role` and `alias` are optional. Use `{"_meta":{"kind":"<kind>","schema":"<kind>/1.0"},...}`.
 - A legacy JSON deliverable with no `_meta` remains readable through filename inference. Never write a partial, null, or non-object `_meta`; strict validation blocks completion.
+- A declared `outputs/<directory>` collection is published as **one directory Artifact**: nested files are members, not separate `ART-*` identities. Consumers may read member paths within the same Run, but must pass only sealed Artifact IDs to `run create --input`. To publish individual nested files, declare narrow `outputs/<literal-dir>/{name}.ext` templates with matching kind/schema/role; an exact nested file path alone does not activate recursive scanning.
 - Team coordination files stay in `{run_dir}/work/team/`, not formal artifacts, and do not carry artifact `_meta`.
 - Resolve the actual `{run_dir}` before joining an `outputs/` path; never write a literal `{run_dir}` placeholder.
 
@@ -57,9 +58,9 @@ For a self-started team Run, use three receipt-chained mutations. `--actor` carr
 2. Stage reusable recipes/pitfalls with `maestro knowledge stage knowhow "<title>" --content-file <path|-> --run <run_id>`; explicit relations use `--signal cited|validated|contradicted --signal-ids <comma-separated ids>`. For a session-source candidate without a Run, use `--session <session-id> --evidence <immutable-ref>`.
 3. Complete through the current Session with `maestro run complete <run_id> --session {session_id} --actor {actor_id} [--evidence <ref> ...] --expected-orchestration-revision {orchestration_revision} --expected-run-revision {run_revision} --verdict {done|done_with_concerns} [--summary "<summary>"] --advance --json`.
 4. Completion is fail-closed. Repair blocking outputs/gates and retry with the same transition identity as directed; never claim success, discard the team, or invent a new Run while completion is blocked. A blocked Run is transitioned with `maestro run transition <run_id> blocked --session {session_id} --actor {actor_id} --expected-run-revision {run_revision} --json`; an abandoned attempt is cancelled with `maestro run cancel <run_id> --session {session_id} --actor {actor_id} --expected-run-revision {run_revision} --expected-orchestration-revision {orchestration_revision} --json`. There is no pause.
-5. Recover a stuck self-started Run by first reading `maestro session status --session {session_id} --json` and `maestro run check <run_id> --session {session_id} --json`. Apply the returned structured `continuation` with fresh request IDs and exact revisions. An open gate uses `maestro run decide <point_id> --session {session_id} --actor {actor_id} --expected-orchestration-revision {orchestration_revision} --verdict {proceed|fix|escalate} --confidence {high|medium|low} --json`; a pending step uses `maestro run next --session {session_id} --actor {actor_id} --expected-orchestration-revision {orchestration_revision} --json`. Resume never restores a prior Run — every retry is a fresh fenced Run.
-6. When the self-started Run is sealed and the chain is terminal, its coordinator executes the shared knowledge closeout protocol. For an orchestrator-dispatched Run, return staged candidate IDs/warnings to that owner; workers do not repeat publication questions. Intermediate Runs continue normally. Zero candidates, rejection, or deferral leave backlog intact and do not block completion.
-7. Finish the terminal self-started Session with `maestro session complete --session {session_id} --actor {actor_id} [--evidence <ref> ...] --expected-orchestration-revision {completion_orchestration_revision} --json`, re-reading status/revision if needed after closeout. Verify the transition receipt. Session identity remains available for a later unarchive.
+5. Recover a stuck self-started Run by reading `maestro session status --session {session_id} --json` for identity/revisions, `maestro run check <run_id> --session {session_id} --json` for blockers, and `maestro run brief <run_id> --session {session_id} --json` for structured `continuation`. Apply only the brief's continuation with fresh request IDs and exact revisions. An open gate uses `maestro run decide <point_id> --session {session_id} --actor {actor_id} --expected-orchestration-revision {orchestration_revision} --verdict {proceed|fix|escalate} --confidence {high|medium|low} --json`; a pending step uses `maestro run next --session {session_id} --actor {actor_id} --expected-orchestration-revision {orchestration_revision} --json`. Resume never restores a prior Run — every retry is a fresh fenced Run.
+6. When the self-started Run is sealed and the chain is terminal, finish the terminal Session with `maestro session complete --session {session_id} --actor {actor_id} [--evidence <ref> ...] --expected-orchestration-revision {completion_orchestration_revision} --json`, re-reading status/revision if needed. Verify the transition receipt before owner closeout. Session identity remains available for a later unarchive.
+7. After terminal Session completion is verified, its coordinator executes the shared knowledge closeout protocol while the host is still interactive. For an orchestrator-dispatched Run, return staged candidate IDs/warnings to that owner; workers do not repeat publication questions. Intermediate Runs continue normally. Zero candidates, rejection, or deferral leave backlog intact and do not block completion.
 8. Run-source promotion requires sealed source Runs and fresh reconciliation. A `session/3.0` session-source candidate does **not** require Session completion: require immutable `candidate_version` + `content_hash`, exact `session_id` + `orchestration_revision`, non-empty `evidence_roots` + `evidence_root_hash`, and a fresh session reconciliation receipt for the current `candidate_snapshot_hash` + `corpus_fingerprint`, revalidated at final commit.
 
 ## Legacy `session/1.x/2.x` Compatibility Branch

@@ -4,6 +4,13 @@ disable-model-invocation: true
 description: Unified team skill for performance optimization. Coordinator orchestrates pipeline, workers are team-worker agents. Supports single/fan-out/independent parallel modes. Triggers on "team perf-opt".
 allowed-tools: Agent, TaskCreate, TaskList, TaskGet, TaskUpdate, TeamCreate, TeamDelete, SendMessage, AskUserQuestion, Read, Write, Edit, Bash, Glob, Grep, mcp__maestro__team_msg
 session-mode: run
+contract:
+  contract_version: 2.1
+  consumes: []
+  produces:
+    - {path: outputs/branches, kind: performance-branches-collection, schema: performance-branches-collection/1.0, role: attachment, required: false}
+    - {path: outputs/pipelines, kind: performance-pipelines-collection, schema: performance-pipelines-collection/1.0, role: attachment, required: false}
+  gates: {entry: [], exit: []}
 ---
 
 <required_reading>

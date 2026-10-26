@@ -24,7 +24,7 @@ If `k > session.max_iterations`: force converge to Phase 4 (safety net).
 ### Step 2: Call aco.py select
 
 ```
-Bash: python <skill_root>/scripts/aco.py --session {run_dir}/work/team select --iter <k>
+Bash: python <skill_root>/scripts/aco.py --session {run_dir}/work/team --run-dir <run_dir> select --iter <k>
 ```
 
 Parse stdout JSON. Expected:
@@ -116,6 +116,7 @@ role: scorer
 role_spec: <skill_root>/roles/scorer/role.md
 session: <session_path>
 session_id: <run-id>
+run_dir: <exact run_dir from the birth packet or team-session.json.run.run_dir>
 team_name: swarm
 requirement: score iteration <k> ants
 inner_loop: false
@@ -167,7 +168,7 @@ If `hallucinations_flagged.length > N/2`: append warning to wisdom/issues.md (hi
 ### Step 5: Call aco.py converged
 
 ```
-Bash: python <skill_root>/scripts/aco.py --session {run_dir}/work/team converged
+Bash: python <skill_root>/scripts/aco.py --session {run_dir}/work/team --run-dir <run_dir> converged
 ```
 
 Parse:
