@@ -1,7 +1,7 @@
 <!-- session-mode: inherited -->
 # Run Mode Lite
 
-Knowledge closeout reference: `@~/.maestro/ref/knowledge-closeout.md`. If not expanded by the host or no longer in context, Read @~/.maestro/ref/knowledge-closeout.md explicitly before closeout; only the completion owner executes its Review → Refresh → Present → Authorize → Execute → Verify protocol.
+Knowledge closeout reference: `@~/.maestro/ref/knowledge-closeout.md`. If not expanded by the host or no longer in context, Read @~/.maestro/ref/knowledge-closeout.md explicitly before closeout; only the completion owner executes its Read internally → Refresh → Present → Ask (human review) → Execute → Verify protocol. Intermediate Runs/workers return candidate IDs and warnings without an approval detour. For the Complete sequence below, complete and verify the terminal Session first, then perform owner closeout while the host is still interactive, before process shutdown; pending backlog never gates completion. Ask itself is human review, not generic approval to start another review; reuse explicit matching approval without asking again, or defer if no dialog-capable host is available.
 
 Lightweight Session/Run lifecycle for team skills. Canonical actions are **negotiate -> open/attach Session (`session/3.0`) -> create/next Run -> complete `--advance` -> `session complete`**. There is no prepare/workflow loading requirement. Old Session start/done aliases and the Execution-era surface appear only in the labeled compatibility branch.
 

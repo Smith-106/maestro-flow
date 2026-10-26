@@ -104,11 +104,11 @@ describe('shared knowledge closeout guards', () => {
     const root = createFixture();
     const path = join(root, 'ref/knowledge-closeout.md');
     const text = readFileSync(path, 'utf8');
-    const start = text.indexOf('### 4. Authorize');
+    const start = text.indexOf('### 4. Ask');
     const execute = text.indexOf('### 5. Execute');
     const verify = text.indexOf('### 6. Verify');
     writeFileSync(path, text.slice(0, start) + text.slice(execute, verify) + text.slice(start, execute) + text.slice(verify));
-    expect(validateExecutionPromptSemantics(root).join('\n')).toMatch(/must order Review → Refresh → Present → Authorize → Execute → Verify/);
+    expect(validateExecutionPromptSemantics(root).join('\n')).toMatch(/must order Read internally → Refresh → Present → Ask → Execute → Verify/);
   });
 
   it('rejects unconditional refresh even when the required keywords remain', () => {
@@ -123,11 +123,17 @@ describe('shared knowledge closeout guards', () => {
     ['Refresh', 'caller permits receipt repair'],
     ['Refresh', 'missing/stale'],
     ...['exact ID', 'title', 'content', 'source/evidence anchors', 'freshness/eligibility', 'matches', 'relationship choices', 'recommended', 'rationale'].map(token => ['Present', token]),
-    ['Authorize', 'ask-user-question'],
-    ['Authorize', 'exact candidate set'],
-    ['Authorize', 'does not authorize writes'],
-    ['Authorize', 'defer and report'],
-    ['Authorize', 'Do not fabricate `duplicate`'],
+    ['Read internally', 'internal data read'],
+    ['Read internally', 'Never send the human to CLI review'],
+    ['Ask', 'ask-user-question'],
+    ['Ask', 'human review itself'],
+    ['Ask', 'Generic consent to review is not publication approval'],
+    ['Ask', 'do not require separate review and approval questions'],
+    ['Ask', 'do not ask again'],
+    ['Ask', 'exact candidate set'],
+    ['Ask', 'does not authorize writes'],
+    ['Ask', 'defer and report'],
+    ['Ask', 'Do not fabricate `duplicate`'],
     ['Execute', '**after** explicit confirmation'],
     ['Execute', '`promote --resolve` is the preferred'],
     ['Execute', 'deprecated `review --resolve` compatibility'],
@@ -146,7 +152,8 @@ describe('shared knowledge closeout guards', () => {
     const root = createFixture();
     const path = join(root, 'ref/knowledge-closeout.md');
     const text = readFileSync(path, 'utf8');
-    const start = text.indexOf(`. ${step}\n`);
+    const start = text.search(new RegExp(`^### \\d+\\. ${step}(?: \\([^\\n]*\\))?\\s*$`, 'm'));
+    expect(start).toBeGreaterThanOrEqual(0);
     const end = text.indexOf('\n### ', start);
     const section = text.slice(start, end < 0 ? text.length : end);
     expect(section).toContain(token);

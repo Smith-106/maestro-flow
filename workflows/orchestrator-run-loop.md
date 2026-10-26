@@ -2,7 +2,7 @@
 # Canonical Orchestrator Run Loop
 
 Canonical lifecycle reference: `@~/.maestro/workflows/run-mode.md`.
-Knowledge closeout reference: `@~/.maestro/ref/knowledge-closeout.md`. If not expanded by the host or no longer in context, Read @~/.maestro/ref/knowledge-closeout.md explicitly before terminal closeout; the completion owner executes its Review → Refresh → Present → Authorize → Execute → Verify protocol.
+Knowledge closeout reference: `@~/.maestro/ref/knowledge-closeout.md`. If not expanded by the host or no longer in context, Read @~/.maestro/ref/knowledge-closeout.md explicitly before terminal closeout; the completion owner executes its Read internally → Refresh → Present → Ask (human review) → Execute → Verify protocol. Intermediate Runs/workers return candidate IDs and warnings without an approval detour. Terminal owner closeout follows verified Session completion while the host is still interactive, before process shutdown; pending backlog never gates completion. Ask itself is human review, not generic approval to start another review; reuse explicit matching approval without asking again, or defer if no dialog-capable host is available.
 
 Maestro and Ralph share this loop. Session (`session/3.0`) is durable topic identity owning the chain, decisions, artifact registry, and the `orchestration_revision` CAS fence; each Run is an immutable step attempt; Runtime alone writes protocol records. There is no Execution, no lease, and no paused state.
 
@@ -55,7 +55,7 @@ For new-runtime responses, the `run-response/1.2` locator/fence, resolved `task`
 | `evaluate_decision` | Read one decision card, dispatch a read-only evaluator, then invoke fenced `maestro run decide` |
 | `accept_reuse` | Apply REVIEW rules below without changing the chain anchor |
 | `recover_session` | Read `session status` / `run check`, transition or cancel the stuck Run, then re-dispatch with `run next` |
-| `seal_session` | Revalidate terminal gates, perform owner knowledge closeout per the shared reference, then use fenced `maestro session complete ... --json`; deferred backlog does not block completion |
+| `seal_session` | Revalidate terminal gates, use fenced `maestro session complete ... --json` and verify its receipt, then perform owner knowledge closeout per the shared reference before host/process shutdown; deferred backlog does not block completion |
 | `offer_recommendations` | Show chain-external suggestions only; never allocate a Run implicitly |
 | `repair_chain` / `stop` | Stop and report structured reasons; never bypass authority |
 
@@ -136,11 +136,11 @@ Goal amendment snapshots the current Session, performs impact analysis and confi
 
 ### 6. Complete
 
-After all Runs are sealed, the chain is terminal (every step completed or skipped with evidence), and no open decision gate remains, execute the shared knowledge closeout protocol as completion owner. Intermediate Runs continue normally; workers do not repeat the approval question. Zero candidates, rejection, or deferral leave any backlog intact and do not block the following completion:
+After all Runs are sealed, the chain is terminal (every step completed or skipped with evidence), and no open decision gate remains, complete the Session independently of knowledge closeout. Intermediate Runs continue normally; workers return candidate IDs/warnings and do not repeat the approval question. Zero candidates, rejection, deferral, or unresolved backlog do not block completion:
 
 `maestro session complete --session {session_id} --actor {actor_id} [--evidence <ref> ...] --expected-orchestration-revision {orchestration_revision} --json`
 
-Verify the transition receipt, then stop. The completed Session identity stays durable; `session unarchive` may reopen it later. `run seal` is recovery-only for terminal pre-upgrade records; it is never the normal completion path.
+Verify the transition receipt, then execute the shared knowledge closeout protocol as completion owner while the host is still interactive, before process shutdown. Reuse explicit matching approval; without a dialog-capable host or matching prior approval, defer and report backlog, then stop. Never begin Ask after shutdown or treat pending knowledge as a completion gate. The completed Session identity stays durable; `session unarchive` may reopen it later. `run seal` is recovery-only for terminal pre-upgrade records; it is never the normal completion path.
 
 ## Failure Rules
 

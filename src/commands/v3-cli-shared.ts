@@ -7,6 +7,7 @@ import type { RunOperationV12, RunResponseV12, TransitionReceiptV20 } from '../r
 import { createRunResponseError, createRunResponseSuccess, emitRunResponse, stableRunResponseErrorCodeV12 } from '../run/response.js';
 import { sessionStateV30Schema, type SessionStateV30 } from '../run/schemas.js';
 import { SessionStore } from '../run/store.js';
+import { knowledgeCloseoutWarning, type KnowledgeCloseoutTiming } from '../run/knowledge-closeout.js';
 import { createRevisionConflictError, V3StructuredError } from '../run/v3/errors.js';
 import { sessionContextErrorToV3Error } from '../run/v3/resolve-context.js';
 import { resolveSessionContextFromStore } from '../run/v3/resolve-context-store.js';
@@ -182,6 +183,11 @@ function responseRevision(receipt: TransitionReceiptV20): NonNullable<RunRespons
   };
 }
 
+const KNOWLEDGE_CLOSEOUT_OPERATIONS = new Set<RunOperationV12>([
+  'next', 'create', 'brief', 'check', 'complete', 'run-seal', 'run-decide', 'run-transition',
+  'session-open', 'session-complete', 'session-status', 'session-resume-view',
+]);
+
 export function emitV3Success(input: {
   operation: RunOperationV12;
   sessionId: string | null;
@@ -189,6 +195,7 @@ export function emitV3Success(input: {
   requestId?: string | null;
   result: unknown;
   mutation?: V3MutationResult;
+  knowledgeCloseoutTiming?: KnowledgeCloseoutTiming;
 }): void {
   // `result` is schema-free (z.unknown()), so object results can carry a
   // grep-friendly one-line summary without touching the strict envelope.
@@ -225,7 +232,10 @@ export function emitV3Success(input: {
     replay: input.mutation
       ? { status: input.mutation.status, transition_id: input.mutation.transition.transition_id }
       : null,
-    warnings: [],
+    warnings: input.sessionId && KNOWLEDGE_CLOSEOUT_OPERATIONS.has(input.operation)
+      ? [knowledgeCloseoutWarning(input.sessionId,
+        input.knowledgeCloseoutTiming ?? (input.operation === 'session-complete' ? 'now' : 'terminal-task-closeout'))]
+      : [],
     result,
   }));
 }

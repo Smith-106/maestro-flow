@@ -385,7 +385,8 @@ export function registerSessionV3Command(program: Command): void {
       try {
         const { store, options: resolved } = resolveV3Options(options);
         const state = store.readSessionV30(resolved.session);
-        emitV3Success({ operation: 'session-status', sessionId: resolved.session, result: state });
+        emitV3Success({ operation: 'session-status', sessionId: resolved.session,
+          knowledgeCloseoutTiming: state.status === 'open' ? 'terminal-task-closeout' : 'now', result: state });
       } catch (error) {
         emitV3Error('session-status', error, { session: options.session });
       }
@@ -440,7 +441,8 @@ export function registerSessionV3Command(program: Command): void {
             { action: 'session-status', targetId: state.session_id, expectedRevision: state.orchestration_revision },
           ],
         });
-        emitV3Success({ operation: 'session-resume-view', sessionId: resolved.session, result: map });
+        emitV3Success({ operation: 'session-resume-view', sessionId: resolved.session,
+          knowledgeCloseoutTiming: state.status === 'open' ? 'terminal-task-closeout' : 'now', result: map });
       } catch (error) {
         emitV3Error('session-resume-view', error, { session: options.session });
       }

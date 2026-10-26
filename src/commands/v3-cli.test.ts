@@ -12,6 +12,8 @@ import { registerExecutionV3RetiredCommand } from './execution-v3-retired.js';
 import { registerRunV3Command } from './run-v3.js';
 import { registerSessionV3Command } from './session-v3.js';
 import { emitV3Error } from './v3-cli-shared.js';
+import { verifyResumeMapFingerprint } from '../run/v3/resume-view.js';
+import { summarizeSessionKnowledge } from '../run/knowledge.js';
 
 const roots: string[] = [];
 const originalExitCode = process.exitCode;
@@ -110,6 +112,79 @@ afterEach(() => {
 });
 
 describe('formal session/3.0 Commander modules', () => {
+  it('delivers owner Ask closeout across the canonical v3 chain without changing authority', async () => {
+    const root = fixture();
+    const deferred = (response: Awaited<ReturnType<typeof invoke>>) => {
+      expect(response.ok, JSON.stringify(response)).toBe(true);
+      expect(response.warnings).toEqual([expect.objectContaining({ code: 'KNOWLEDGE_CLOSEOUT_DEFERRED', replacement_command: null })]);
+      expect(response.warnings[0].message).toContain('@~/.maestro/ref/knowledge-closeout.md');
+      expect(response.warnings[0].message).toContain('intermediate workers return candidate IDs');
+      expect(response.warnings[0].message).not.toMatch(/maestro knowledge review|ask-user-question|Present candidates|Only execute approved/);
+    };
+    const immediate = (response: Awaited<ReturnType<typeof invoke>>) => {
+      expect(response.ok).toBe(true);
+      expect(response.warnings).toEqual([expect.objectContaining({ code: 'KNOWLEDGE_CLOSEOUT', replacement_command: null })]);
+      expect(response.warnings[0].message).toContain('Ask itself is human review');
+      expect(response.warnings[0].message).toContain('maestro knowledge review s-v3 --json');
+      expect(response.warnings[0].message).toContain('fixed IDs');
+      expect(response.warnings[0].message).toContain('Machine advice is not authorization');
+    };
+    const call = async (register: (program: Command) => void, args: string[]) => {
+      vi.restoreAllMocks();
+      return invoke(register, args);
+    };
+    const birth = await call(registerRunV3Command, ['run', 'next', '--run', 'run-1', ...mutationFlags(root, '--expected-orchestration-revision')]);
+    deferred(birth);
+    for (const command of ['brief', 'check']) {
+      deferred(await call(registerRunV3Command, ['run', command, 'run-1', '--session', 's-v3', '--json', '--workflow-root', root]));
+    }
+    writeFileSync(join(root, '.workflow', 'sessions', 's-v3', 'runs', 'run-1', 'report.md'),
+      '---\nsummary: closeout fixture\ndecisions:\n  - text: "Fence delayed publication callbacks with the current resource revision."\n    status: accepted\n---\n');
+    const complete = await call(registerRunV3Command, ['run', 'complete', 'run-1', '--advance', '--summary', 'closeout fixture',
+      '--expected-orchestration-revision', String(birth.revision!.revision),
+      ...mutationFlags(root, '--expected-run-revision', (birth.result as { revision: number }).revision)]);
+    deferred(complete);
+    expect(complete.result).toMatchObject({ status: 'sealed', continuation: { operation: 'session-complete' } });
+    const staged = summarizeSessionKnowledge(root, 's-v3', { readOnly: true, strict: true });
+    expect(staged.candidates).toHaveLength(1);
+    expect(staged.candidates[0]).toMatchObject({ status: 'pending' });
+    const completeSessionArgs = ['session', 'complete', ...mutationFlags(root, '--expected-orchestration-revision', 2)];
+    const completed = await call(registerSessionV3Command, completeSessionArgs);
+    immediate(completed);
+    const replayed = await call(registerSessionV3Command, completeSessionArgs);
+    immediate(replayed);
+    expect(replayed.replay?.status).toBe('replayed');
+    expect(replayed.warnings).toEqual(completed.warnings);
+    const sessionFile = join(root, '.workflow', 'sessions', 's-v3', 'session.json');
+    const beforeReads = readFileSync(sessionFile, 'utf8');
+    for (const command of ['status', 'resume-view']) {
+      const response = await call(registerSessionV3Command, ['session', command, '--session', 's-v3', '--json', '--workflow-root', root]);
+      immediate(response);
+      if (command === 'resume-view') {
+        const { summary_line: _summary, ...map } = response.result as Record<string, unknown>;
+        expect(verifyResumeMapFingerprint(map)).toBe(true);
+        expect(map).not.toHaveProperty('knowledge_closeout');
+      }
+    }
+    for (const command of ['brief', 'check']) {
+      const response = await call(registerRunV3Command, ['run', command, 'run-1', '--session', 's-v3', '--json', '--workflow-root', root]);
+      immediate(response);
+      if (command === 'brief') expect(response.result).toMatchObject({ next: null, continuation: null });
+    }
+    expect(readFileSync(sessionFile, 'utf8')).toBe(beforeReads);
+    const retained = summarizeSessionKnowledge(root, 's-v3', { readOnly: true, strict: true });
+    expect(retained.candidates.map(candidate => ({ id: candidate.candidate_id, status: candidate.status })))
+      .toEqual(staged.candidates.map(candidate => ({ id: candidate.candidate_id, status: 'pending' })));
+    expect(new SessionStore(root).readRunV30('s-v3', 'run-1')).toMatchObject({ status: 'sealed', revision: 2 });
+  });
+
+  it.each(['completed', 'archived'] as const)('does not restart a %s Session from a sealed Run brief', async status => {
+    const root = fixture({ status, stepStatus: 'completed', run: { status: 'sealed', revision: 1 } });
+    const response = await invoke(registerRunV3Command, ['run', 'brief', 'run-1', '--session', 's-v3', '--json', '--workflow-root', root]);
+    expect(response).toMatchObject({ ok: true, result: { next: null, continuation: null }, warnings: [{ code: 'KNOWLEDGE_CLOSEOUT' }] });
+    expect((response.result as Record<string, unknown>).summary_line).not.toContain('maestro session complete');
+  });
+
   it('marks STORE_BUSY errors retryable in the 1.2 envelope', () => {
     const writes: string[] = [];
     vi.spyOn(process.stdout, 'write').mockImplementation(((chunk: string | Uint8Array) => {

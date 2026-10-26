@@ -3,7 +3,7 @@
 
 This file is the single Session/Run contract for every command, workflow, and stateful skill that declares `session-mode: run`.
 
-Knowledge closeout uses `@~/.maestro/ref/knowledge-closeout.md`. If not expanded by the host or no longer in context, Read @~/.maestro/ref/knowledge-closeout.md explicitly before closeout; the completion owner follows its Review → Refresh → Present → Authorize → Execute → Verify protocol.
+Knowledge closeout uses `@~/.maestro/ref/knowledge-closeout.md`. If not expanded by the host or no longer in context, Read @~/.maestro/ref/knowledge-closeout.md explicitly before closeout; the completion owner follows its Read internally → Refresh → Present → Ask (human review) → Execute → Verify protocol. Intermediate Runs/workers return candidate IDs and warnings without an approval detour. Terminal owner closeout follows verified Session completion while the host is still interactive, before process shutdown; pending backlog never gates completion. Ask itself is human review, not generic approval to start another review; reuse explicit matching approval without asking again, or defer if no dialog-capable host is available.
 
 Canonical lifecycle: **negotiate -> open/attach Session identity (`session/3.0`) -> dispatch/attach chain Run (`run next` / `run create`) -> brief/check/complete `--advance` -> decide / `session chain insert|replace|update|skip` as needed -> `session complete`**.
 
@@ -141,7 +141,7 @@ Migration preserves sealed source bytes and their raw registry role/alias semant
 - Completion returns a `knowledge-candidate-receipt/1.0` with the exact staged candidate IDs and reconciliation summary. The owner uses the shared closeout protocol: `maestro knowledge review {session_id} --json`, `--refresh` only for missing/stale receipts within caller authority, human confirmation before resolution/publication, and fixed approved IDs via `promote --candidate`. Promotion has two source-specific gates:
   - Run-source candidates require every source Run sealed and a fresh reconciliation receipt.
   - A `session/3.0` session-source candidate does **not** require Session completion. At stage time it must bind immutable `candidate_version` + `content_hash`, the exact `session_id` + `orchestration_revision`, and non-empty immutable `evidence_roots` + `evidence_root_hash`. Review/promotion must revalidate those candidate/evidence roots, the `candidate_snapshot_hash`, and a fresh session-level reconciliation receipt for the current `corpus_fingerprint`; final commit repeats the reconciliation/corpus check. Later unrelated Session activity does not invalidate the candidate unless its bound candidate content or evidence roots changed.
-  Promote selected IDs with repeatable `maestro knowledge promote {session_id} --candidate <candidate-id>`. `--all` promotes all eligible pending candidates (observed-only emits a warning); it skips unresolved and suppressed candidates. A confirmed `supersede` resolution lets promotion create the successor and link the evolution chain atomically. Neither Run completion nor Session completion implicitly promotes or discards a backlog.
+  Promote only the explicitly approved fixed IDs with repeatable `maestro knowledge promote {session_id} --candidate <candidate-id>` per the shared reference; never widen owner closeout with `--all`. A confirmed `supersede` resolution lets promotion create the successor and link the evolution chain atomically. Neither Run completion nor Session completion implicitly promotes or discards a backlog.
 - Knowledge audit is separate read-only maintenance: `maestro knowledge audit --prune` emits a deterministic soft-action report only. Audit has no apply, mutation, or physical-delete path; usage frequency alone never produces a prune suggestion. Any later lifecycle change requires a separately authorized explicit Spec/Knowhow command.
 
 ## Chain Effects and Proposals
@@ -172,12 +172,12 @@ Migration preserves sealed source bytes and their raw registry role/alias semant
 
    `maestro run next --session {session_id} --actor {actor_id} [--evidence <ref> ...] --expected-orchestration-revision {orchestration_revision} --json`
 
-   `suggest_only` describes Runtime passivity; it is not an implicit user-confirmation gate. Re-read each receipt before the next mutation. Never copy an old command carrying stale revisions. When the chain has no pending step, perform owner knowledge closeout per the shared reference, then terminate with `maestro session complete ... --json` (below); deferred backlog is not a completion gate.
+   `suggest_only` describes Runtime passivity; it is not an implicit user-confirmation gate. Re-read each receipt before the next mutation. Never copy an old command carrying stale revisions. When the chain has no pending step, complete and verify the Session with `maestro session complete ... --json` (below), then perform owner knowledge closeout per the shared reference before host/process shutdown; deferred backlog is not a completion gate.
 5. For a decision node, submit the evaluator result through the current Session:
 
    `maestro run decide {point_id} --session {session_id} --actor {actor_id} [--evidence <ref> ...] --expected-orchestration-revision {orchestration_revision} --verdict {proceed|fix|escalate} [--confidence {high|medium|low}] [--summary "..."] [--after-step <id>] --json`
 
-6. Retain the completion receipt's candidate IDs and reconciliation warnings for the completion owner. Intermediate Runs continue the confirmed chain; workers return without a publication question. At terminal overall-task closeout, the owner executes `@~/.maestro/ref/knowledge-closeout.md`, not just its copyable shell commands. Zero candidates, rejection, deferral, and unresolved backlog permit otherwise valid completion.
+6. Retain the completion receipt's candidate IDs and reconciliation warnings for the completion owner. Intermediate Runs continue the confirmed chain; workers return without a publication question. At terminal overall-task closeout, after verified Session completion and before host/process shutdown, the owner executes `@~/.maestro/ref/knowledge-closeout.md`, not just its copyable shell commands. Zero candidates, rejection, deferral, and unresolved backlog permit otherwise valid completion.
 7. Report Run success only after completion succeeds. A sealed Run and its artifacts are immutable; later Runs reuse eligible sealed outputs through `upstream` rather than copying or reopening them.
 
 ## Session Lifecycle End and Recovery
@@ -189,7 +189,7 @@ Migration preserves sealed source bytes and their raw registry role/alias semant
 
   `maestro session complete --session {session_id} --actor {actor_id} [--evidence <ref> ...] --expected-orchestration-revision {orchestration_revision} --json`
 
-  Verify the returned transition receipt, then stop. The completed Session identity remains durable and may be **unarchived** (`maestro session unarchive ... --json`) for a later extension; archived Sessions cannot host new Runs. `maestro session archive` / `maestro session unarchive` are the only archive-state mutations. Legacy migration is audited and revision-fenced. Select the `session/3.0` writer first; the source Session files remain legacy until the migration commits:
+  Verify the returned transition receipt, then perform terminal owner knowledge closeout per the shared reference while the host is still interactive, before stopping. No dialog-capable host and no matching prior explicit approval means defer; backlog does not undo or block Session completion. The completed Session identity remains durable and may be **unarchived** (`maestro session unarchive ... --json`) for a later extension; archived Sessions cannot host new Runs. `maestro session archive` / `maestro session unarchive` are the only archive-state mutations. Legacy migration is audited and revision-fenced. Select the `session/3.0` writer first; the source Session files remain legacy until the migration commits:
 
   - Single Session: `maestro session migrate --session {legacy_session_id} --to-v3 --actor {actor_id} --expected-identity-revision {legacyIdentityRevision} --expected-activity-revision {legacyActivityRevision} --json`
   - Batch: `maestro session migrate --all --to-v3 --actor {actor_id} --expected-revisions '<session revision manifest JSON>' --json`

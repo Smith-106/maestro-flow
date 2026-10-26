@@ -23,6 +23,7 @@ import {
   transcriptQuoteInputSchema,
 } from '../run/transcript-evidence.js';
 import { resolveWriteAuthority } from '../run/knowledge-identity.js';
+import { knowledgeCloseoutWarning } from '../run/knowledge-closeout.js';
 import { auditKnowledge, type KnowledgeAuditScope } from '../knowledge/audit.js';
 import {
   applyKnowledgeNormalization,
@@ -853,8 +854,16 @@ export function registerKnowledgeCommand(program: Command): void {
             );
           }
         }
+        const knowledgeCloseout = knowledgeCloseoutWarning(
+          authority.sessionId,
+          authority.kind === 'run' ? 'terminal-task-closeout' : 'now',
+        );
         if (opts.json) {
-          console.log(JSON.stringify({ ...result, signal_recorded: signalResult?.recorded ?? 0 }, null, 2));
+          console.log(JSON.stringify({
+            ...result,
+            signal_recorded: signalResult?.recorded ?? 0,
+            knowledge_closeout: knowledgeCloseout,
+          }, null, 2));
           return;
         }
         const where = authority.kind === 'run'
@@ -878,22 +887,20 @@ export function registerKnowledgeCommand(program: Command): void {
             );
           }
         }
-        const reviewTiming = executionAuthority
-          ? 'after the Execution is sealed'
-          : 'after completion';
         console.log(
           `Staged ${result.candidate_id} on ${where}`
           + ('reused' in result && result.reused ? ' (identical content already staged; existing candidate kept — title/evidence unchanged)' : '')
           + (signalResult ? `; recorded ${signalResult.recorded} signal(s) as ${opts.signal}` : '')
-          + `; the completion owner reads candidates internally ${reviewTiming}, presents them, and uses Ask for human review and explicit action decisions.`,
+          + `; ${knowledgeCloseout.message}`,
         );
         if (authority.kind !== 'run') {
           // Run-less (session-source) staging has no `run check` finish checklist;
           // inject the next-step card here so the agent knows the review protocol,
           // entry-maintenance channels, and the evidence-freshness timing rule.
           console.log(
-            'Next: run the review, present each candidate to the user (title/summary/evidence/matches/recommended disposition), '
-            + 'collect decisions, then promote --resolve — never hand the raw command to the user as the whole task.',
+            'Next: the completion owner follows @~/.maestro/ref/knowledge-closeout.md now: '
+            + 'read internally, refresh only if needed and authorized, present candidates, then Ask for human review '
+            + 'and explicit fixed-ID action decisions together — not a separate generic review approval before publication.',
           );
           console.log(
             'Entry maintenance: replaced canonical rules → `maestro spec supersede <old-sid> --by <new-sid>`; '

@@ -386,7 +386,9 @@ export function registerRunV3Command(program: Command): void {
         );
         const packet = v3BirthPacket(store, sessionState, value, registry);
         const pendingStep = sessionState.chain.find(item => item.status === 'pending');
-        const continuation = value.status === 'running'
+        const continuation = sessionState.status !== 'open'
+          ? { next: null, continuation: null }
+          : value.status === 'running'
           ? v3CompleteNext({
             sessionId: sessionState.session_id,
             runId: resolvedRunId,
@@ -415,6 +417,7 @@ export function registerRunV3Command(program: Command): void {
           operation: 'brief',
           sessionId: resolved.session,
           runId: resolvedRunId,
+          knowledgeCloseoutTiming: sessionState.status === 'open' ? 'terminal-task-closeout' : 'now',
           result: {
             schema_version: 'brief-result/3.0',
             session: {
@@ -532,7 +535,8 @@ export function registerRunV3Command(program: Command): void {
         // receipt omits the field entirely without warnings.
         const receipt = readV3KnowledgeReconciliation(store, resolved.session, resolvedRunId);
         if (receipt) result.knowledge_reconciliation = v3ReconciliationSummary(receipt);
-        emitV3Success({ operation: 'check', sessionId: resolved.session, runId: resolvedRunId, result });
+        emitV3Success({ operation: 'check', sessionId: resolved.session, runId: resolvedRunId,
+          knowledgeCloseoutTiming: sessionState.status === 'open' ? 'terminal-task-closeout' : 'now', result });
       } catch (error) {
         emitV3Error('check', error, { session: options.session, runId });
       }

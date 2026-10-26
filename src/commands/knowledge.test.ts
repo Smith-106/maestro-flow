@@ -16,6 +16,7 @@ import {
   sealSession,
 } from '../run/runtime.js';
 import { readRunKnowledgeDelta, summarizeSessionKnowledge } from '../run/knowledge.js';
+import { touchChannel } from '../run/knowledge-identity.js';
 import type { RunV30, SessionStateV30 } from '../run/schemas.js';
 import { SessionStore } from '../run/store.js';
 import { initializeRepositoryIdentity } from '../repository/context.js';
@@ -444,6 +445,15 @@ describe('maestro knowledge Run lifecycle CLI', () => {
     const staged = JSON.parse(logs.at(-1)!) as { candidate_id: string; signal_recorded: number };
     expect(staged.candidate_id).toMatch(/^KDC-[a-f0-9]{16}$/);
     expect(staged.signal_recorded).toBe(2);
+    expect(staged).toMatchObject({
+      session_id: created.session_id,
+      run_id: created.run_id,
+      knowledge_closeout: {
+        code: 'KNOWLEDGE_CLOSEOUT_DEFERRED',
+        message: expect.stringContaining(`Session ${created.session_id}`),
+        replacement_command: null,
+      },
+    });
 
     const delta = readRunKnowledgeDelta(
       new SessionStore(projectRoot),
@@ -510,7 +520,15 @@ describe('maestro knowledge Run lifecycle CLI', () => {
       '--run', context.runId, '--session', context.sessionId, '--json',
     );
     expect(process.exitCode ?? 0).toBe(0);
-    expect(JSON.parse(logs.at(-1)!)).toMatchObject({ run_id: context.runId });
+    expect(JSON.parse(logs.at(-1)!)).toMatchObject({
+      session_id: context.sessionId,
+      run_id: context.runId,
+      knowledge_closeout: {
+        code: 'KNOWLEDGE_CLOSEOUT_DEFERRED',
+        message: expect.stringContaining(`Session ${context.sessionId}`),
+        replacement_command: null,
+      },
+    });
 
     await run(
       'record', 'spec:v3-authority', '--signal', 'validated', '--source', 'manual',
@@ -1219,10 +1237,100 @@ Full knowledge lifecycle verified.
     const staged = JSON.parse(logs.at(-1)!) as { candidate_id: string; session_id: string; origin: string };
     expect(staged.origin).toBe('session');
     expect(staged.session_id).toBe(created.session_id);
+    expect(staged).not.toHaveProperty('run_id');
+    expect(staged).toMatchObject({
+      signal_recorded: 0,
+      knowledge_closeout: {
+        code: 'KNOWLEDGE_CLOSEOUT',
+        message: expect.stringContaining(`maestro knowledge review ${created.session_id} --json`),
+        replacement_command: null,
+      },
+    });
     const summary = summarizeSessionKnowledge(projectRoot, created.session_id);
     const candidate = summary.candidates.find(item => item.candidate_id === staged.candidate_id);
     expect(candidate?.origin).toBe('session');
     expect(candidate?.run_ids).toEqual([]);
+  });
+
+  it('routes closeout timing through resolved channel authority, not host IDs', async () => {
+    const created = createRun({
+      projectRoot,
+      command: 'knowledge-cli',
+      sessionId: 'canonical-channel-session',
+      intent: 'resolve closeout through canonical authority',
+    });
+    const hostId = 'pi-chat-is-not-a-maestro-session';
+    touchChannel(projectRoot, {
+      identity: hostId,
+      hostKind: 'pi',
+      context: { kind: 'run', session_id: created.session_id, run_id: created.run_id },
+    });
+    await run(
+      'stage', 'knowhow', 'Channel Run rule', 'Use canonical authority for closeout timing.',
+      '--channel', hostId, '--json',
+    );
+    expect(process.exitCode ?? 0).toBe(0);
+    const runStage = JSON.parse(logs.at(-1)!);
+    expect(runStage).toMatchObject({
+      session_id: created.session_id,
+      run_id: created.run_id,
+      candidate_id: expect.stringMatching(/^KDC-[a-f0-9]{16}$/),
+      signal_recorded: 0,
+      knowledge_closeout: {
+        code: 'KNOWLEDGE_CLOSEOUT_DEFERRED',
+        message: expect.stringContaining(`Session ${created.session_id}`),
+        replacement_command: null,
+      },
+    });
+    expect(runStage.knowledge_closeout.message).not.toContain(hostId);
+
+    writeFileSync(join(projectRoot, 'channel-evidence.txt'), 'Immutable channel evidence.\n', 'utf8');
+    await run(
+      'stage', 'knowhow', 'Synthetic channel rule', 'Run-less closeout is immediate.',
+      '--channel', 'standalone-chat', '--evidence', 'channel-evidence.txt', '--json',
+    );
+    expect(process.exitCode ?? 0).toBe(0);
+    const sessionStage = JSON.parse(logs.at(-1)!);
+    expect(sessionStage).toMatchObject({
+      session_id: expect.stringMatching(/^ksyn-/),
+      origin: 'session',
+      candidate_id: expect.stringMatching(/^KDC-[a-f0-9]{16}$/),
+      signal_recorded: 0,
+      knowledge_closeout: {
+        code: 'KNOWLEDGE_CLOSEOUT',
+        message: expect.stringContaining(`maestro knowledge review ${sessionStage.session_id} --json`),
+        replacement_command: null,
+      },
+    });
+    expect(sessionStage).not.toHaveProperty('run_id');
+    expect(sessionStage.knowledge_closeout.message).not.toContain('review standalone-chat');
+    expect(summarizeSessionKnowledge(projectRoot, created.session_id).candidates[0].status).toBe('pending');
+    expect(summarizeSessionKnowledge(projectRoot, sessionStage.session_id).candidates[0].status).toBe('pending');
+    expect(errors).toEqual([]);
+  });
+
+  it('prints deferred owner closeout on Run-source staging', async () => {
+    const created = createRun({
+      projectRoot,
+      command: 'knowledge-cli',
+      sessionId: 'run-source-card',
+      intent: 'defer knowledge review until terminal task closeout',
+    });
+    await run(
+      'stage', 'knowhow', 'Run-source closeout rule', 'Intermediate workers return without a publication question.',
+      '--run', created.run_id, '--session', created.session_id,
+    );
+    const output = logs.join('\n');
+    expect(output).toContain('Continue the confirmed Run/Session chain');
+    expect(output).toContain('intermediate workers return candidate IDs without an approval detour');
+    expect(output).toContain('terminal task closeout');
+    expect(output).toContain('@~/.maestro/ref/knowledge-closeout.md');
+    expect(output).toContain(`Session ${created.session_id}`);
+    expect(output).toContain('Do not start human review or publication in this intermediate Run.');
+    expect(output).not.toMatch(/maestro knowledge review|ask-user-question|Present candidates|Only execute approved/);
+    expect(output).not.toContain('Next:');
+    expect(summarizeSessionKnowledge(projectRoot, created.session_id).candidates[0].status).toBe('pending');
+    expect(errors).toEqual([]);
   });
 
   it('prints the run-less next-step card on session-source staging', async () => {
@@ -1246,9 +1354,17 @@ Full knowledge lifecycle verified.
       'src/session-source-card.ts:9',
     );
     const output = logs.join('\n');
-    expect(output).toContain('the completion owner reads candidates internally after completion, presents them, and uses Ask for human review and explicit action decisions.');
+    expect(output).toContain('The completion owner must handle knowledge closeout now while the host is interactive.');
+    expect(output).toContain('Read @~/.maestro/ref/knowledge-closeout.md.');
+    expect(output).toContain(`maestro knowledge review ${created.session_id} --json`);
+    expect(output).toContain('Present candidates and use ask-user-question');
+    expect(output).toContain('Ask itself is human review, not permission to start another review.');
+    expect(output).toContain('reuse matching prior human authorization');
+    expect(output).toContain('no dialog-capable host');
+    expect(output).toContain('Never auto-promote or widen with --all.');
     expect(output).not.toContain('review after completion with "maestro knowledge review');
-    expect(output).toContain('Next: run the review, present each candidate to the user');
+    expect(output).toContain('Next: the completion owner follows @~/.maestro/ref/knowledge-closeout.md now:');
+    expect(output).toContain('explicit fixed-ID action decisions together — not a separate generic review approval before publication.');
     expect(output).toContain('maestro spec supersede <old-sid> --by <new-sid>');
     expect(output).toContain('stage after evidence files are finalized');
     expect(output).toContain('Fast path: for a standalone insight that needs no Run/Session binding');

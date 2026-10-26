@@ -481,10 +481,10 @@ export const KNOWLEDGE_CLOSEOUT_ENTRIES = [
 // Check the shared protocol once; importers need routing and a Read fallback,
 // not copies of the protocol's prose. These are prompt guards, not CLI gates.
 const CLOSEOUT_STEPS = [
-  ['Review', ['maestro knowledge review {session_id} --json', 'No candidates']],
+  ['Read internally', ['maestro knowledge review {session_id} --json', 'internal data read', 'Never send the human to CLI review', 'No candidates']],
   ['Refresh', ['Only when review reports **missing/stale** reconciliation receipts, and the caller permits receipt repair, run', 'missing/stale', 'caller permits receipt repair', '--refresh --json', 'read the returned view', 'report the exact blocker']],
   ['Present', ['exact ID', 'title', 'content', 'source/evidence anchors', 'freshness/eligibility', 'matches', 'relationship choices', 'recommended', 'rationale', 'untrusted evidence']],
-  ['Authorize', ['ask-user-question', 'explicit human', 'exact candidate set', 'content/evidence', 'relationship/target', 'publication action', 'selection, rejection, and deferral', 'displayed fixed list of IDs', 'Importance, `-y`, machine recommendations', 'advisory decision policy', '`accepted` decision status', '**not** knowledge publication approval', 'does not authorize writes', 'defer and report', 'Do not fabricate `duplicate`']],
+  ['Ask', ['ask-user-question', 'human review itself', 'Generic consent to review is not publication approval', 'do not require separate review and approval questions', 'do not ask again', 'exact candidate set', 'content/evidence', 'relationship/target', 'publication action', 'selection, rejection, and deferral', 'displayed fixed list of IDs', 'Importance, `-y`, machine recommendations', 'advisory decision policy', '`accepted` decision status', '**not** knowledge publication approval', 'does not authorize writes', 'defer and report', 'Do not fabricate `duplicate`']],
   ['Execute', ['Freeze the approved IDs', 'one candidate at a time', 'Do not widen selection with `--all`', '**after** explicit confirmation', 'maestro knowledge promote {session_id} --resolve <approved-candidate-id>', '--as <duplicate|related|conflict|supersede|unique>', '--target <matched-knowledge-id>', '--reason', '`unique` has **no `--target`**', 'current evidence-backed `matches`', '`duplicate`/`conflict` suppress', 'only relationship adjudication was authorized', 'deprecated `review --resolve` compatibility', 'maestro knowledge promote {session_id} --candidate <approved-candidate-id> --json', '`promote --resolve` is the preferred', '`review --resolve` remains the deprecated', 'Stop on blocked/uncertain results', 'never direct-write Spec/Knowhow']],
   ['Verify', ['Read each execution result', 're-read `maestro knowledge review {session_id} --json`', 'actual publication outcomes/knowledge IDs', 'remaining pending', 'command issuance is not success', 're-present and re-confirm', 'Never silently reuse approval', 'all source Runs sealed', 'does **not** require Session completion', 'immutable candidate version/content hash', 'exact Session identity/revision', 'non-empty evidence roots/hash', 'candidate-snapshot/corpus reconciliation', 'final commit']],
 ];
@@ -536,9 +536,9 @@ export function inspectKnowledgeCloseout(root = process.cwd()) {
   if (text === null) errors.push(`${path}: missing shared knowledge closeout source`);
   else {
     errors.push(...validateCloseoutRouting(text, path));
-    const headings = [...text.matchAll(/^### (\d+)\. (Review|Refresh|Present|Authorize|Execute|Verify)\s*$/gm)];
+    const headings = [...text.matchAll(/^### (\d+)\. (Read internally|Refresh|Present|Ask|Execute|Verify)(?: \([^\n]*\))?\s*$/gm)];
     if (headings.map(match => `${match[1]}. ${match[2]}`).join(' → ') !== CLOSEOUT_STEPS.map(([name], i) => `${i + 1}. ${name}`).join(' → ')) {
-      errors.push(`${path}: knowledge closeout must order Review → Refresh → Present → Authorize → Execute → Verify`);
+      errors.push(`${path}: knowledge closeout must order Read internally → Refresh → Present → Ask → Execute → Verify`);
     }
     for (const [name, required] of CLOSEOUT_STEPS) {
       const index = headings.findIndex(match => match[2] === name);
