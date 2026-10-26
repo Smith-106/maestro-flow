@@ -4625,7 +4625,7 @@ function prepareSessionGuidance(
       reason: `next pending step is ${chain[nextExecutionIndex].step_id}`,
     };
   } else {
-    reminders.push('No pending chain execution step remains; seal the Session after reviewing the knowledge candidate backlog.');
+    reminders.push('No pending chain execution step remains; seal the Session independently of the knowledge candidate backlog.');
     next = {
       command: `maestro run seal-session ${session.session_id}`,
       reason: 'chain has no pending execution steps',
@@ -4638,14 +4638,14 @@ function prepareSessionGuidance(
   if (pendingKnowledge.length > 0 || promotingKnowledge.length > 0) {
     reminders.push(
       `Knowledge backlog: ${pendingKnowledge.length} pending, ${promotingKnowledge.length} promoting; `
-      + `review with \`maestro knowledge review ${sessionId}\`.`,
+      + 'the completion owner reads candidates internally, presents them, and uses Ask for human review and explicit action decisions; backlog does not block Session completion.',
     );
   }
   if (reviewRequiredKnowledge > 0 || missingReconciliation > 0) {
     reminders.push(
       `Knowledge reconciliation: ${reviewRequiredKnowledge} require review, `
       + `${conflictKnowledge} potential conflicts, ${missingReconciliation} missing receipts; `
-      + `inspect with \`maestro knowledge review ${sessionId}\`.`,
+      + 'the completion owner inspects receipts internally under caller authority and presents affected candidates in Ask for human review and explicit action decisions.',
     );
   }
 

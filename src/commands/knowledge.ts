@@ -885,7 +885,7 @@ export function registerKnowledgeCommand(program: Command): void {
           `Staged ${result.candidate_id} on ${where}`
           + ('reused' in result && result.reused ? ' (identical content already staged; existing candidate kept — title/evidence unchanged)' : '')
           + (signalResult ? `; recorded ${signalResult.recorded} signal(s) as ${opts.signal}` : '')
-          + `; review ${reviewTiming} with "maestro knowledge review ${result.session_id}".`,
+          + `; the completion owner reads candidates internally ${reviewTiming}, presents them, and uses Ask for human review and explicit action decisions.`,
         );
         if (authority.kind !== 'run') {
           // Run-less (session-source) staging has no `run check` finish checklist;
@@ -1018,7 +1018,7 @@ export function registerKnowledgeCommand(program: Command): void {
         console.log(
           `Recorded ${result.recorded} input(s) as ${opts.signal} (source ${opts.source}) `
           + `on ${where}; `
-          + `review with "maestro knowledge review ${result.session_id}".`,
+          + 'the completion owner reads candidates internally, presents them, and uses Ask for human review and explicit action decisions.',
         );
       } catch (error) {
         console.error(`Error: ${error instanceof Error ? error.message : String(error)}`);

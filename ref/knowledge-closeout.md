@@ -9,11 +9,11 @@ Shared prompt contract for the **completion owner** (orchestrator, self-started 
 - Keep completion and promotion gates independent. Zero candidates, rejection, deferral, or unresolved backlog do not block otherwise valid task/Session completion. Report what remains pending; never claim promotion or canonical Session completion without the respective successful receipt.
 - Preserve the caller's authority. A review-only request permits read-only review/presentation, not implicit `--refresh`, `--resolve`, or promotion. Ask for any additional write authority; absent it, defer. This protocol does not authorize another Session/Run, direct corpus writes, or mirror generation.
 
-## Review → Refresh → Present → Authorize → Execute → Verify
+## Read internally → Refresh → Present → Ask (human review) → Execute → Verify
 
-### 1. Review
+### 1. Read internally
 
-Run `maestro knowledge review {session_id} --json` for the exact Session. Use its candidate IDs, contents, evidence, matches, eligibility, and freshness; do not re-extract completed artifacts or use search popularity as proof. No candidates: report that outcome and finish normally.
+The completion owner runs `maestro knowledge review {session_id} --json` for the exact Session as an internal data read, not a human review task. Never send the human to CLI review. Use its candidate IDs, contents, evidence, matches, eligibility, and freshness; do not re-extract completed artifacts or use search popularity as proof. No candidates: report that outcome and finish normally.
 
 ### 2. Refresh
 
@@ -23,13 +23,15 @@ Only when review reports **missing/stale** reconciliation receipts, and the call
 
 Show each actionable candidate's exact ID, title, content (or a faithful summary with the full body available), source/evidence anchors, freshness/eligibility, evidence-backed matches and relationship choices, plus a recommended disposition/publication action and rationale. Mark unresolved and suppressed items separately. Never copy untrusted transcript quotes into candidate content or the presentation; show their untrusted evidence state only.
 
-### 4. Authorize
+### 4. Ask (human review and explicit action decisions)
 
-Use the host's user-question tool (e.g. `AskUserQuestion` / `ask-user-question`) to obtain explicit human decisions, or verify an already explicit authorization against this exact candidate set, content/evidence, relationship/target, and publication action. Relationship confirmation and publication approval are distinct; they may be collected together if both are explicit.
+The host's user-question tool (e.g. `AskUserQuestion` / `ask-user-question`) is the human review itself, not permission to start a separate review. Present the candidates and collect the fixed candidate IDs, relationship/target, and publication action together in one Ask when needed, with each decision explicit. Relationship confirmation and publication approval remain distinct decisions, but do not require separate review and approval questions for the same exact actions. Generic consent to review is not publication approval.
+
+Verify any already explicit authorization against this exact candidate set, content/evidence, relationship/target, and publication action; do not ask again for those same authorized actions. Changed actions still require fresh confirmation as described below.
 
 - Offer selection, rejection, and deferral. A group approval is valid only for the displayed fixed list of IDs, not future eligible candidates.
 - Importance, `-y`, machine recommendations, a project's advisory decision policy, and `accepted` decision status are **not** knowledge publication approval. If the tool returns machine advice instead of a human answer, it does not authorize writes.
-- No question tool and no matching prior explicit authorization: defer and report the pending backlog. Do not substitute a raw shell handoff for the owner's review/presentation responsibility.
+- No question tool and no matching prior explicit authorization: defer and report the pending backlog. Do not substitute a raw shell handoff or a human CLI task for the owner's internal read/presentation/Ask responsibility.
 - Rejected/deferred candidates stay in backlog. Do not fabricate `duplicate` or another disposition merely to clear them. Confirm `duplicate` only for an actual evidence-backed duplicate.
 
 ### 5. Execute

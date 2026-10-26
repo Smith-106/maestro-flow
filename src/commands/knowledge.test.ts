@@ -1048,10 +1048,10 @@ Full knowledge lifecycle verified.
       '--source',
       'manual',
       '--allow-unknown',
-      '--json',
     );
-    const recorded = JSON.parse(logs.at(-1)!) as { recorded: number };
-    expect(recorded.recorded).toBe(1);
+    expect(logs.at(-1)).toContain('Recorded 1 input(s) as validated (source manual)');
+    expect(logs.at(-1)).toContain('the completion owner reads candidates internally, presents them, and uses Ask for human review and explicit action decisions.');
+    expect(logs.at(-1)).not.toContain('review with "maestro knowledge review');
 
     const delta = readRunKnowledgeDelta(
       new SessionStore(projectRoot),
@@ -1246,7 +1246,8 @@ Full knowledge lifecycle verified.
       'src/session-source-card.ts:9',
     );
     const output = logs.join('\n');
-    expect(output).toContain('review after completion with "maestro knowledge review');
+    expect(output).toContain('the completion owner reads candidates internally after completion, presents them, and uses Ask for human review and explicit action decisions.');
+    expect(output).not.toContain('review after completion with "maestro knowledge review');
     expect(output).toContain('Next: run the review, present each candidate to the user');
     expect(output).toContain('maestro spec supersede <old-sid> --by <new-sid>');
     expect(output).toContain('stage after evidence files are finalized');
